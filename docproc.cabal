@@ -1,0 +1,165 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.37.0.
+--
+-- see: https://github.com/sol/hpack
+
+name:           docproc
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/hugodro/docproc#readme>
+homepage:       https://github.com/hugodro/docproc#readme
+bug-reports:    https://github.com/hugodro/docproc/issues
+author:         Hugo desRosiers
+maintainer:     hugo.desrosiers@boardingcities.com
+copyright:      Boarding Cities
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/hugodro/docproc
+
+library
+  exposed-modules:
+      Commands
+      Commands.Extract
+      Commands.Fetch
+      Commands.GenDocs
+      Commands.Help
+      Commands.Load
+      Commands.PostP
+      Commands.Version
+      DB.Connect
+      DB.Opers
+      MainLogic
+      Options
+      Options.Cli
+      Options.ConfFile
+      Options.Runtime
+  other-modules:
+      Paths_docproc
+  hs-source-dirs:
+      src
+  default-extensions:
+      OverloadedStrings
+      DuplicateRecordFields
+      OverloadedRecordDot
+      DeriveGeneric
+  ghc-options: -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  build-depends:
+      aeson
+    , aeson-pretty
+    , base >=4.7 && <5
+    , bytestring
+    , case-insensitive
+    , cmark
+    , containers
+    , directory
+    , doctemplates
+    , filepath
+    , gitrev
+    , http-client
+    , http-client-multipart
+    , http-client-tls
+    , http-types
+    , mtl
+    , optparse-applicative
+    , pandoc
+    , pandoc-types
+    , process
+    , regex-tdfa
+    , tagsoup
+    , text
+    , time
+    , vector
+    , yaml
+  default-language: Haskell2010
+
+executable docproc
+  main-is: Main.hs
+  other-modules:
+      Paths_docproc
+  hs-source-dirs:
+      app
+  default-extensions:
+      OverloadedStrings
+      DuplicateRecordFields
+      OverloadedRecordDot
+      DeriveGeneric
+  ghc-options: -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      aeson
+    , aeson-pretty
+    , base >=4.7 && <5
+    , bytestring
+    , case-insensitive
+    , cmark
+    , containers
+    , directory
+    , docproc
+    , doctemplates
+    , filepath
+    , gitrev
+    , http-client
+    , http-client-multipart
+    , http-client-tls
+    , http-types
+    , mtl
+    , optparse-applicative
+    , pandoc
+    , pandoc-types
+    , process
+    , regex-tdfa
+    , tagsoup
+    , text
+    , time
+    , vector
+    , yaml
+  default-language: Haskell2010
+
+test-suite docproc-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_docproc
+  hs-source-dirs:
+      test
+  default-extensions:
+      OverloadedStrings
+      DuplicateRecordFields
+      OverloadedRecordDot
+      DeriveGeneric
+  ghc-options: -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      aeson
+    , aeson-pretty
+    , base >=4.7 && <5
+    , bytestring
+    , case-insensitive
+    , cmark
+    , containers
+    , directory
+    , docproc
+    , doctemplates
+    , filepath
+    , gitrev
+    , http-client
+    , http-client-multipart
+    , http-client-tls
+    , http-types
+    , mtl
+    , optparse-applicative
+    , pandoc
+    , pandoc-types
+    , process
+    , regex-tdfa
+    , tagsoup
+    , text
+    , time
+    , vector
+    , yaml
+  default-language: Haskell2010

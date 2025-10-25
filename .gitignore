@@ -1,0 +1,11 @@
+.vscode
+*.jsonl
+.stack-work/
+*~
+._*
+.DS_Store
+Data/
+Out/
+Results/
+Fmt
+BatchInputs
