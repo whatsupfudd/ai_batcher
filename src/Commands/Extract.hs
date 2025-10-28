@@ -44,14 +44,16 @@ doExtract jsonlPath outPrefix rtOpts = do
     joined = T.intercalate "\n\n---\n\n" (reverse texts)
 
   -- Write raw text
-  let txtPath  = outPrefix ++ ".txt"
-      htmlPath = outPrefix ++ ".html"
-  TIO.writeFile txtPath joined
+  let
+    htmlPath = outPrefix ++ ".html"
+    txtPath  = outPrefix ++ ".txt"
+  -- TIO.writeFile txtPath joined
 
   -- Markdown -> HTML and inject into template
   let
+    title = T.breakOn "\n" joined
     htmlFrag = commonmarkToHtml [optSmart, optSafe] joined
-    fullHtml = renderTemplate htmlFrag
+    fullHtml = renderTemplate (fst title) htmlFrag
   BS.writeFile htmlPath (TE.encodeUtf8 fullHtml)
 
   putStrLn $ "Processed lines: " ++ show total
@@ -196,11 +198,11 @@ collectFromContent v =
     Left  _  -> []
 
 -- Simple HTML template with the converted Markdown injected into a child <div>
-renderTemplate :: T.Text -> T.Text
-renderTemplate htmlFrag = T.concat
+renderTemplate :: T.Text -> T.Text -> T.Text
+renderTemplate title htmlFrag = T.concat
   [ "<!doctype html>\n<html lang=\"en\">\n<head>\n"
   , "<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-  , "<title>Extracted Results</title>\n"
+  , "<title>" <> title <> "</title>\n"
   , "<style>body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:24px}"
   , ".container{max-width:900px;margin:0 auto}.prose h1,h2,h3{line-height:1.25}</style>\n"
   , "</head>\n<body>\n<main class=\"container\">\n<div id=\"content\" class=\"prose\">\n"
