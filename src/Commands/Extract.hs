@@ -30,7 +30,7 @@ import Data.Aeson ( (.:), (.:?) )
 import CMark (commonmarkToHtml, optSmart, optSafe)
 import Data.Maybe (maybeToList)
 
-import qualified Options as Opt
+import qualified Options.Runtime as Opt
 
 
 doExtract :: FilePath -> FilePath -> Opt.RunOptions -> IO ()

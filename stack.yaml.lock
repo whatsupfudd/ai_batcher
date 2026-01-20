@@ -11,6 +11,27 @@ packages:
       size: 164
   original:
     hackage: http-client-multipart-0.3.0.0@sha256:d675f10cba69c98233467dd533ba46e64f34798fc2ea528efe662ad2ea6c89bf,554
+- completed:
+    hackage: distributed-process-0.7.8@sha256:5f33886c431444a874df7c54e30d0a13913eb4f8a39785924b7e6b648ed5efb1,7682
+    pantry-tree:
+      sha256: bcbd459840b5cc32cc0b170ea906f96eece8276556ba3ba4ff1e40f6521b444d
+      size: 3056
+  original:
+    hackage: distributed-process-0.7.8@sha256:5f33886c431444a874df7c54e30d0a13913eb4f8a39785924b7e6b648ed5efb1,7682
+- completed:
+    hackage: distributed-process-simplelocalnet-0.3.3@sha256:12ddd4eff2246f9b9f6a586df465029c5585b1f0be2c29e5b67d87e5e72684fa,2740
+    pantry-tree:
+      sha256: 55224d14e4fea8d5eae762f70c5d25e761ca1628127e8a24bc25cb99cfd627e0
+      size: 451
+  original:
+    hackage: distributed-process-simplelocalnet-0.3.3@sha256:12ddd4eff2246f9b9f6a586df465029c5585b1f0be2c29e5b67d87e5e72684fa,2740
+- completed:
+    hackage: network-transport-tcp-0.8.6@sha256:82818f659c4324f1ef7d008803ee362669cbcef66c93bd00367e3370d547a813,3792
+    pantry-tree:
+      sha256: c6ffebfb5db0070a24c5306d5125d8b08171b14cb8b97dc8852f61464de8fe96
+      size: 605
+  original:
+    hackage: network-transport-tcp-0.8.6@sha256:82818f659c4324f1ef7d008803ee362669cbcef66c93bd00367e3370d547a813,3792
 snapshots:
 - completed:
     sha256: 238fa745b64f91184f9aa518fe04bdde6552533d169b0da5256670df83a0f1a9

@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 -- OpenAI Batch Cache Loader — v0.2
 -- Change: do NOT use Files API for the reference doc anymore.
 -- Instead, read a plain-text document, PREPEND its content to each prompt, and
@@ -60,7 +61,7 @@ import Network.HTTP.Types (HeaderName)
 
 import GHC.Generics ( Generic )
 
-import qualified Options as Opt
+import qualified Options.Runtime as Opt
 
 
 -- -------------------------------

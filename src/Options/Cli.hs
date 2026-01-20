@@ -6,8 +6,8 @@ import Data.Text (Text)
 import Options.Applicative
 
 
-data EnvOptions = EnvOptions {
-    home :: Maybe Text
+newtype EnvOptions = EnvOptions {
+    appHome :: Maybe FilePath
   }
 
 data CliOptions = CliOptions {
@@ -30,6 +30,7 @@ data Command =
   | LoadCmd FilePath FilePath FilePath
   | PostPCmd FilePath
   | GenDocsCmd FilePath FilePath
+  | ServerCmd
   deriving stock (Show)
 
 parseCliOptions :: IO (Either String CliOptions)
@@ -96,6 +97,7 @@ commandDefs =
       , ("load", loadOpts, "Loads the results into a JSONL file.")
       , ("postp", postpOpts, "Posts the results to a HTML file.")
       , ("gendoc", gendocOpts, "Generates DOCX and PDF files from a HTML file.")
+      , ("server", pure ServerCmd, "Starts the server.")
       ]
     headArray = head cmdArray
     tailArray = tail cmdArray

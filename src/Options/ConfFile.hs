@@ -16,12 +16,54 @@ import qualified System.IO.Error as Serr
 import qualified Data.Yaml as Yaml
 
 
+data PgDbOpts = PgDbOpts {
+  port :: Maybe Int
+  , host :: Maybe String
+  , user :: Maybe String
+  , passwd :: Maybe String
+  , dbase :: Maybe String
+  , poolSize :: Maybe Int
+  , poolTimeOut :: Maybe Int
+}
+  deriving stock (Show, Generic)
+
+
+data ServerOpts = ServerOpts {
+    port :: Maybe Int
+  , host :: Maybe Text
+  , cache :: Maybe FilePath
+  }
+  deriving stock (Show, Generic)
+
+data JwtOpts = JwtOpts {
+    jEnabled :: Maybe Bool
+  , keyFile :: Maybe FilePath
+  }
+  deriving stock (Show, Generic)
+
+data CorsOpts = CorsOpts {
+    oEnabled :: Maybe Bool
+  , allowed :: Maybe [String]
+  }
+  deriving stock (Show, Generic)
+
+data S3Options = S3Options {
+  accessKey :: Maybe Text
+  , secretKey :: Maybe Text
+  , host :: Maybe Text
+  , region :: Maybe Text
+  , bucket :: Maybe Text
+  }
+  deriving stock (Show, Generic)
+
 
 data FileOptions = FileOptions {
   debug :: Maybe Int
-  , primaryLocale :: Maybe String
-  -- HERE: add new parameters received from the config file:
-  -- Et: , rootDir :: Maybe String
+  , db :: Maybe PgDbOpts
+  , server :: Maybe ServerOpts
+  , jwt :: Maybe JwtOpts
+  , cors :: Maybe CorsOpts
+  , s3store :: Maybe S3Options  
  }
  deriving stock (Show, Generic)
 
@@ -40,6 +82,12 @@ defaultConfigFilePath = do
 
 -- YAML support:
 instance Aes.FromJSON FileOptions
+instance Aes.FromJSON PgDbOpts
+instance Aes.FromJSON ServerOpts
+instance Aes.FromJSON JwtOpts
+instance Aes.FromJSON CorsOpts
+instance Aes.FromJSON S3Options
+
 
 parseFileOptions :: FilePath -> IO (Either String FileOptions)
 parseFileOptions filePath =

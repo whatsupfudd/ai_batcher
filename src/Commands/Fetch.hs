@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 -- OpenAI Batch Results Fetcher (first draft)
 --
 -- Purpose: Given the identifiers saved by the companion "batch-cache-loader" tool
@@ -58,7 +59,7 @@ import System.Exit ( exitFailure )
 import System.FilePath ( (</>), takeBaseName, takeExtension )
 import System.IO ( hPutStrLn, stderr )
 
-import qualified Options as Opt
+import qualified Options.Runtime as Opt
 
 
 -- -------------------------------

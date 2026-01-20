@@ -27,7 +27,7 @@ import           Text.HTML.TagSoup          ( Tag(..)
                                             , parseTags
                                             , renderTags )
 
-import qualified Options as Opt
+import qualified Options.Runtime as Opt
 
 
 --------------------------------------------------------------------------------

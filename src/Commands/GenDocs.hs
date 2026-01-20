@@ -55,7 +55,7 @@ import qualified Text.Pandoc.Builder as Pb
 import qualified Text.Pandoc.PDF as PDF
 import qualified Text.DocTemplates as Pt 
 
-import qualified Options as Opt
+import qualified Options.Runtime as Opt
 
 
 doGenDocs :: FilePath -> FilePath -> Opt.RunOptions -> IO ()

@@ -6,6 +6,7 @@ module Commands  (
   , module Commands.Load
   , module Commands.PostP
   , module Commands.GenDocs
+  , module Commands.Server
  )
 where
 
@@ -16,5 +17,6 @@ import Commands.Fetch
 import Commands.Load
 import Commands.PostP
 import Commands.GenDocs
+import Commands.Server
 -- HERE: import 
 

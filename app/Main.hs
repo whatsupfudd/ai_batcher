@@ -4,7 +4,8 @@ import qualified Control.Exception as Cexc
 import qualified System.Environment as Senv
 import qualified System.IO.Error as Serr
 
-import qualified Options as Opt
+import qualified Options.Cli as Opt
+import qualified Options.ConfFile as Opt
 import qualified MainLogic as Ml
 
 
