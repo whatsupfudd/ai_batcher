@@ -1,11 +1,11 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE QuasiQuotes #-}
 
 module Assets.Template where
 
 import Control.Exception (Exception, throwIO)
 import Control.Monad (forM, forM_)
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Writer.Lazy (Writer)
 
 import Data.Bifunctor (first)
@@ -19,6 +19,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.UUID (UUID)
+import Data.UUID as Uu
 import qualified Data.Vector as V
 
 import System.FilePath (takeFileName)
@@ -33,14 +34,16 @@ import qualified Data.Aeson.KeyMap as Akm
 import qualified Hasql.Pool as Pool
 import qualified Hasql.Transaction as Tx
 import qualified Hasql.Transaction.Sessions as TxS
-import qualified Hasql.Statement as St
-import qualified Hasql.TH as TH
 
 import Text.Ginger.Parse (IncludeResolver, parseGinger, SourcePos, ParserError)
 import Text.Ginger.Run (easyRender)
 import Text.Ginger.Run.Type (Run)
 import Text.Ginger.GVal (GVal, dict, rawJSONToGVal, (~>))
 import Text.Ginger.AST as Ga
+
+import qualified DB.TemplateStmt as Ts
+import DB.EngineStmt (execStmt)
+
 
 --------------------------------------------------------------------------------
 -- Public API / Environment
@@ -54,9 +57,9 @@ data Context = Context {
   }
 
 data SourceItem = SourceItem
-  { siHeaderToml :: Text
-  , siMetaJson   :: Value
-  , siBody       :: Text
+  { headerTomlSI :: Text
+  , metaJsonSI   :: Value
+  , bodySI       :: Text
   }
   deriving (Show, Eq, Generic)
 
@@ -81,6 +84,10 @@ data AssetTemplateError
 -- ^ production name
 ingestTemplate :: Context -> FilePath -> FilePath -> Text -> IO (Either AssetTemplateError UUID)
 ingestTemplate ctxt templatePath sourcePath productionName = do
+  putStrLn $ "Ingesting template: " <> templatePath
+  putStrLn $ "Ingesting source: " <> sourcePath
+  putStrLn $ "Ingesting production: " <> T.unpack productionName
+
   tplBytes <- BS.readFile templatePath
   srcBytes <- BS.readFile sourcePath
 
@@ -91,13 +98,19 @@ ingestTemplate ctxt templatePath sourcePath productionName = do
     templateName = T.pack (takeFileName templatePath)
     sourceName = T.pack (takeFileName sourcePath)
 
+  putStrLn $ "Template name: " <> T.unpack templateName
+  putStrLn $ "Source name: " <> T.unpack sourceName
+
   -- Upload raw assets to S3
   tplLoc <- ctxt.s3RepoCT tplBytes
   srcLoc <- ctxt.s3RepoCT srcBytes
+  putStrLn $ "Template locator: " <> T.unpack (T.pack . Uu.toString $ tplLoc)
+  putStrLn $ "Source locator: " <> T.unpack (T.pack . Uu.toString $ srcLoc)
 
   -- Parse ginger template (from memory).
   -- Ginger's Source type is String; we keep filenames for better error messages.
   tplRez <- parseGinger nullResolver (Just (T.unpack templateName)) (T.unpack tplText)
+  putStrLn $ "Ginger parse result: " <> show tplRez
   case tplRez of
     Left err -> pure . Left . GingerParseError . T.pack . show $ err
     Right template ->
@@ -109,34 +122,32 @@ ingestTemplate ctxt templatePath sourcePath productionName = do
             tplSize = fromIntegral (BS.length tplBytes)
             srcSize :: Int64
             srcSize = fromIntegral (BS.length srcBytes)
-          in
-            let
-              session = TxS.transaction TxS.Serializable TxS.Write $ do
-                -- record S3 metadata
-                Tx.statement (tplLoc, "template" :: Text, tplSize) insertS3Object
-                Tx.statement (srcLoc, "source"   :: Text, srcSize) insertS3Object
+          in do
+          result <- execStmt ctxt.pgPoolCT $ do
+            -- record S3 metadata
+            Tx.statement (tplLoc, "template" :: Text, tplSize) Ts.insertS3Object
+            Tx.statement (srcLoc, "source"   :: Text, srcSize) Ts.insertS3Object
 
-                -- asset rows
-                templateId <- Tx.statement (templateName, tplLoc) insertTemplate
-                sourceId   <- Tx.statement (sourceName,   srcLoc) insertSource
+            -- asset rows
+            templateId <- Tx.statement (templateName, tplLoc) Ts.insertTemplate
+            sourceId   <- Tx.statement (sourceName,   srcLoc) Ts.insertSource
 
-                -- production
-                productionId <- Tx.statement (productionName, templateId, sourceId) insertProduction
+            -- production
+            productionId <- Tx.statement (productionName, templateId, sourceId) Ts.insertProduction
 
-                -- requests
-                forM_ (zip [1..] items) $ \(idx, item) -> do
-                    let
-                      rendered = renderRequest productionName idx item template
-                    reqId <- Tx.statement (productionId, fromIntegral idx, item.siMetaJson, rendered) insertRequest
-                    Tx.statement (reqId, "entered" :: Text, mkEnteredDetails templateName sourceName idx item) insertRequestEvent
-                    pure reqId
+            -- requests
+            forM_ (zip [1..] items) $ \(idx, item) -> do
+                let
+                  rendered = renderRequest productionName idx item template
+                reqId <- Tx.statement (productionId, fromIntegral idx, item.metaJsonSI, rendered) Ts.insertRequest
+                Tx.statement (reqId, "entered" :: Text, mkEnteredDetails templateName sourceName idx item) Ts.insertRequestEvent
+                pure reqId
 
-                pure productionId
-            in do
-            result <- Pool.use ctxt.pgPoolCT session
-            case result of
-              Left err -> pure . Left $ DbError (T.pack (show err))
-              Right anID -> pure $ Right anID
+            pure productionId
+
+          case result of
+            Left err -> pure . Left $ DbError (T.pack (show err))
+            Right anID -> pure $ Right anID
 
 
 nullResolver :: IncludeResolver IO
@@ -155,14 +166,14 @@ renderRequest productionName ix sItem template =
     ctx = dict [ 
         "production" ~> (dict [ "name" ~> productionName ] :: GVal RenderM)
       , "index" ~> ix
-      , "text" ~> sItem.siBody
-      , "meta" ~> (rawJSONToGVal sItem.siMetaJson :: GVal RenderM)
-      , "header_toml" ~> sItem.siHeaderToml
+      , "text" ~> sItem.bodySI
+      , "meta" ~> (rawJSONToGVal sItem.metaJsonSI :: GVal RenderM)
+      , "header_toml" ~> sItem.headerTomlSI
       , "item" ~> (dict [
             "index" ~> ix
-          , "text" ~> sItem.siBody
-          , "meta" ~> (rawJSONToGVal sItem.siMetaJson :: GVal RenderM)
-          , "header_toml" ~> sItem.siHeaderToml
+          , "content" ~> sItem.bodySI
+          , "meta" ~> (rawJSONToGVal sItem.metaJsonSI :: GVal RenderM)
+          , "header_toml" ~> sItem.headerTomlSI
         ] :: GVal RenderM)
       ]
   in
@@ -174,7 +185,7 @@ mkEnteredDetails templateName sourceName ix sItem = Ae.object [
     , "template_name" .= templateName
     , "source_name"   .= sourceName
     , "item_index"    .= ix
-    , "header_toml"   .= sItem.siHeaderToml
+    , "header_toml"   .= sItem.headerTomlSI
     ]
 
 {-- Safer explicit pure parse (avoids ambiguous monad inference around parseGinger).
@@ -213,9 +224,9 @@ parseSourceItems t =
                   in do
                       meta <- parseTomlHeaderToJson hdrTxt
                       let item = SourceItem
-                                { siHeaderToml = hdrTxt
-                                , siMetaJson   = meta
-                                , siBody       = bodyTxt
+                                { headerTomlSI = hdrTxt
+                                , metaJsonSI   = meta
+                                , bodySI       = bodyTxt
                                 }
                       (item :) <$> iterItems next
   in
@@ -331,57 +342,3 @@ insertDottedKey (k:ks) v obj =
                 _               -> Akm.empty
       child' = insertDottedKey ks v child
   in Akm.insert key (Object child') obj
-
---------------------------------------------------------------------------------
--- DB statements (Hasql-TH)
-
-insertS3Object :: St.Statement (UUID, Text, Int64) ()
-insertS3Object =
-  [TH.resultlessStatement|
-    insert into batcher.s3_objects (locator, kind, bytes)
-    values ($1 :: uuid, $2 :: text, $3 :: int8)
-    on conflict (locator) do nothing
-  |]
-
-insertTemplate :: St.Statement (Text, UUID) UUID
-insertTemplate =
-  [TH.singletonStatement|
-    insert into batcher.asset_templates (template_name, s3_locator)
-    values ($1 :: text, $2 :: uuid)
-    returning template_id :: uuid
-  |]
-
-insertSource :: St.Statement (Text, UUID) UUID
-insertSource =
-  [TH.singletonStatement|
-    insert into batcher.asset_sources (source_name, s3_locator)
-    values ($1 :: text, $2 :: uuid)
-    returning source_id :: uuid
-  |]
-
-insertProduction :: St.Statement (Text, UUID, UUID) UUID
-insertProduction =
-  [TH.singletonStatement|
-    insert into batcher.productions (production_name, template_id, source_id)
-    values ($1 :: text, $2 :: uuid, $3 :: uuid)
-    returning production_id :: uuid
-  |]
-
-insertRequest :: St.Statement (UUID, Int32, Value, Text) UUID
-insertRequest =
-  [TH.singletonStatement|
-    insert into batcher.requests
-      (production_id, item_index, item_meta, request_text)
-    values
-      ($1 :: uuid, $2 :: int4, $3 :: jsonb, $4 :: text)
-    returning request_id :: uuid
-  |]
-
-insertRequestEvent :: St.Statement (UUID, Text, Value) ()
-insertRequestEvent =
-  [TH.resultlessStatement|
-    insert into batcher.request_events
-      (request_id, state, details)
-    values
-      ($1::uuid, $2::text::batcher.request_state, $3::jsonb)
-  |]

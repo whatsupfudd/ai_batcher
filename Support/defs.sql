@@ -106,16 +106,15 @@ CREATE TABLE IF NOT EXISTS batcher.request_events (
   occurred_at  timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS request_events_by_req_time
-  ON batcher.request_events (request_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS request_events_by_req_time ON batcher.request_events (request_id, occurred_at DESC);
 
 -- Durable outbox for Engine.Fetch (one row per ready batch).
 CREATE TABLE IF NOT EXISTS batcher.fetch_outbox (
   provider_batch_uuid uuid PRIMARY KEY,
-  created_at          timestamptz NOT NULL DEFAULT now()
   fetch_claimed_until timestamptz,
   fetch_claimed_by text,
   fetch_claim_token uuid,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS fetch_outbox_claim_idx
-  ON batcher.fetch_outbox (fetch_claimed_until);
+
+CREATE INDEX IF NOT EXISTS fetch_outbox_claim_idx ON batcher.fetch_outbox (fetch_claimed_until);

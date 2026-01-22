@@ -251,3 +251,15 @@ listRequestsForBatchStmt = [vectorStatement|
      where provider_batch_uuid = $1 :: uuid
        and state = 'completed'
   |]
+
+claimPollBatchOneStmt :: Statement (UUID, Text, UUID, Int32) (Vector UUID)
+claimPollBatchOneStmt = [vectorStatement|
+    update batcher.requests
+       set poll_claimed_by    = $2 :: text,
+           poll_claim_token   = $3 :: uuid,
+           poll_claimed_until = now() + make_interval(secs => $4 :: int4)
+     where provider_batch_uuid = $1 :: uuid
+       and (poll_claimed_until is null or poll_claimed_until < now())
+     returning request_id :: uuid
+  |]
+

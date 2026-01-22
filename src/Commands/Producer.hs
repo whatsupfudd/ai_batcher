@@ -29,8 +29,11 @@ produceCmd prodOpts rtOpts = do
             pgPoolCT = pgPool
           , s3RepoCT = storeS3 s3Conn
           }
-        in
-        Tp.ingestTemplate ctxt prodOpts.templateIG prodOpts.sourceIG prodOpts.productIG
+        in do
+        rezA <- Tp.ingestTemplate ctxt prodOpts.templateIG prodOpts.sourceIG prodOpts.productIG
+        case rezA of
+          Left err -> putStrLn $ "@[produceCmd] ingestTemplate err: " <> show err
+          Right productionId -> putStrLn $ "@[produceCmd] productionId: " <> show productionId
       pure ()
 
 

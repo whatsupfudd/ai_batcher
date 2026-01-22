@@ -52,10 +52,12 @@ library
       DB.Connect
       DB.EngineStmt
       DB.Opers
+      DB.TemplateStmt
       Engine.Fetch
       Engine.Poll
       Engine.Runner
       Engine.Submit
+      Engine.Support
       HttpSup.CorsPolicy
       HttpSup.JWT
       MainLogic
