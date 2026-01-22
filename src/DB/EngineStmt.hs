@@ -73,11 +73,11 @@ claimRequestsStmt =
       limit $1 :: int4
       for update skip locked
     )
-    update batcher.requests u
-      set submit_claimed_by    = $2 :: text,
-          submit_claim_token   = $3 :: uuid,
-          submit_claimed_until = now() + make_interval(secs => $4 :: int4),
-          updated_at           = now()
+    update batcher.requests u set 
+      submit_claimed_by = $2 :: text,
+      submit_claim_token = $3 :: uuid,
+      submit_claimed_until = now() + make_interval(secs => $4 :: int4),
+      updated_at = now()
     from picked
     where u.request_id = picked.request_id
     returning u.request_id :: uuid, picked.request_text :: text

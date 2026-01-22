@@ -63,7 +63,8 @@ data FileOptions = FileOptions {
   , server :: Maybe ServerOpts
   , jwt :: Maybe JwtOpts
   , cors :: Maybe CorsOpts
-  , s3store :: Maybe S3Options  
+  , s3store :: Maybe S3Options
+  , provider :: Maybe Text
  }
  deriving stock (Show, Generic)
 

@@ -8,8 +8,7 @@ import Control.Concurrent.Async (Async, async, link, waitAnyCancel)
 import Control.Concurrent.STM
 import Control.Exception (Exception, throwIO)
 import Control.Monad (forever, void, when)
-import Data.Aeson (Value, (.=))
-import qualified Data.Aeson as Aeson
+
 import qualified Data.ByteString.Lazy as BL
 import Data.Int (Int32, Int64)
 import Data.Text (Text)
@@ -20,6 +19,9 @@ import Data.Vector (Vector)
 
 import GHC.Generics (Generic)
 
+import Data.Aeson (Value, (.=))
+import qualified Data.Aeson as Aeson
+
 import qualified Hasql.Pool as Pool
 import qualified Hasql.Transaction as Tx
 import qualified Hasql.Transaction.Sessions as TxS
@@ -27,6 +29,7 @@ import Hasql.Statement (Statement)
 import Hasql.TH
 
 import qualified DB.EngineStmt as Es
+import qualified Engine.Runner as R
 
 
 --------------------------------------------------------------------------------
@@ -51,7 +54,7 @@ data Context = Context
   -- ^ Store object in S3 under UUID locator; return locator.
   , fetchBatchCT    :: UUID -> IO (Either FetchError Value)
   -- ^ Service.AiSystem.fetchBatch
-  , enqueueGenDocCT :: UUID -> IO ()
+  , enqueueGenDocCT :: Maybe (UUID -> IO ())
   -- ^ Send request_id to Engine.GenDoc main loop (next handler).
   }
 
@@ -72,7 +75,22 @@ data FetchHandle = FetchHandle
   }
 
 
--- | Start Engine.Fetch with an internal queue.
+startFetchEngine :: Context -> FetchConfig -> IO FetchHandle
+startFetchEngine ctxt cfg = do
+  h <- R.startEngine R.EngineSpec
+    { queueDepthES  = cfg.queueDepthFC
+    , workerCountES = cfg.workerCountFC
+    , feedersES     = [outboxClaimerLoop ctxt cfg]
+    , workerES      = workerLoop ctxt cfg
+    }
+  pure FetchHandle
+    { asyncFH   = h.asyncEH
+    , enqueueFH = \batchUuid -> h.enqueueEH (FetchJob batchUuid Nothing)
+    }
+
+
+
+{-- | Start Engine.Fetch with an internal queue.
 --   Returns a handle including an enqueue function for Engine.Poll to call.
 startFetchEngine :: Context -> FetchConfig -> IO FetchHandle
 startFetchEngine env cfg = do
@@ -81,7 +99,6 @@ startFetchEngine env cfg = do
   pure FetchHandle { asyncFH = a
         , enqueueFH = \batchUuid -> atomically (writeTBQueue q (FetchJob batchUuid Nothing))
     }
-
 
 -- | Run using a provided queue (if you want to manage it elsewhere).
 runFetchEngineWithQueue :: Context -> FetchConfig -> TBQueue FetchJob -> IO ()
@@ -93,6 +110,7 @@ runFetchEngineWithQueue ctxt cfg q = do
   mapM_ link workersA
 
   void $ waitAnyCancel (outboxClaimerA : workersA)
+-}
 
 --------------------------------------------------------------------------------
 -- Jobs
@@ -143,9 +161,9 @@ claimFetchOutboxOne pool nodeId token batchUuid ttlSec = do
 --------------------------------------------------------------------------------
 -- Worker
 
-workerLoop :: Context -> FetchConfig -> Int -> TBQueue FetchJob -> IO ()
-workerLoop ctxt cfg _workerIx q = forever $ do
-  job <- atomically (readTBQueue q)
+workerLoop :: Context -> FetchConfig -> Int -> FetchJob -> IO ()
+workerLoop ctxt cfg _workerIx job = forever $ do
+  -- job <- atomically (readTBQueue q)
 
   -- Ensure we own a durable outbox claim for this batch (single-worker guarantee).
   (token, claimed) <- case job.claimTokenFJ of
@@ -176,7 +194,9 @@ workerLoop ctxt cfg _workerIx q = forever $ do
         reqIds <- persistRawAndAttach ctxt.pgPoolCT token job.batchUuidFJ loc sz
 
         -- Push per-request downstream.
-        mapM_ ctxt.enqueueGenDocCT reqIds
+        case ctxt.enqueueGenDocCT of
+          Just enqueueGDoc -> mapM_ enqueueGDoc reqIds
+          Nothing -> pure ()
 
 
 --------------------------------------------------------------------------------

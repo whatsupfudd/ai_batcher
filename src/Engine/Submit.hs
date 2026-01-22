@@ -20,6 +20,7 @@ import Control.Monad (forever, when)
 import Data.Aeson (Value)
 import qualified Data.Aeson as Ae
 import Data.Int (Int32)
+import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
@@ -55,14 +56,14 @@ data SubmitConfig = SubmitConfig
   }
   deriving (Show, Eq, Generic)
 
-data SubmitOk = SubmitOk
-  { providerBatchUuidSO    :: UUID
-  , providerRequestIDsSO   :: [(UUID, Text)]
+data SubmitOk = SubmitOk { 
+    providerBatchUuidSO :: UUID
+  , providerRequestIDsSO :: [(UUID, Text)]
   }
   deriving (Show, Eq, Generic)
 
-data SubmitError = SubmitError
-  { codeSE    :: Text
+data SubmitError = SubmitError { 
+    codeSE :: Text
   , messageSE :: Text
   }
   deriving (Show, Eq, Generic)
@@ -71,7 +72,7 @@ newtype SubmitEngineError = DbError Text
   deriving (Show, Eq, Generic, Exception)
 
 data SubmitHandle = SubmitHandle
-  { asyncSH   :: Async ()
+  { asyncSH :: Async ()
   , enqueueSH :: SubmitMsg -> IO ()
   }
 
@@ -112,26 +113,33 @@ kickFeeder cfg q = forever $ do
 submitWorker :: Context -> SubmitConfig -> SubmitMsg -> IO ()
 submitWorker ctxt cfg SubmitKick = drainOnce
   where
-    drainOnce = do
-      token <- nextRandom
-      claimed <- claimEnteredRequests ctxt.pgPoolCT ctxt.nodeIdCT token cfg.batchSizeSC cfg.claimTtlSecondsSC
-      if V.null claimed
-        then pure ()
-        else do
-          processOne token claimed
-          drainOnce
+  drainOnce = do
+    putStrLn "@[submitWorker] draining...."
+    token <- nextRandom
+    claimed <- claimEnteredRequests ctxt.pgPoolCT ctxt.nodeIdCT token cfg.batchSizeSC cfg.claimTtlSecondsSC
+    if V.null claimed then do
+      putStrLn "@[submitWorker] no claims."
+      pure ()
+    else do
+      putStrLn $ "@[submitWorker] claims: " <> L.intercalate "\n" (V.toList $ V.map show claimed)
+      processOne token claimed
+      drainOnce
 
-    processOne token claimedVec = do
-      let claimedNE = NE.fromList (V.toList claimedVec)
-          reqPairs  = NE.map (\cr -> (requestIDCR cr, requestTextCR cr)) claimedNE
+  processOne token claimedVec = do
+    putStrLn "@[submitWorker] processing..."
+    let
+      claimList = V.toList claimedVec
+      reqPairs  = NE.map (\cr -> (cr.requestIDCR, cr.requestTextCR)) $ NE.fromList claimList
 
-      res <- ctxt.sendRequestCT reqPairs
-      case res of
-        Left err -> releaseClaimWithError ctxt.pgPoolCT token err (NE.toList claimedNE)
-        Right ok -> do
-          markSubmittedBatch ctxt.pgPoolCT token ok.providerBatchUuidSO ok.providerRequestIDsSO (NE.toList claimedNE)
-          -- FAST PATH: tell Poll immediately
-          ctxt.enqueuePollCT ok.providerBatchUuidSO
+    putStrLn $ "@[submitWorker] sending request: " <> show reqPairs
+    res <- ctxt.sendRequestCT reqPairs
+    putStrLn $ "@[submitWorker] response: " <> show res
+    case res of
+      Left err -> releaseClaimWithError ctxt.pgPoolCT token err claimList
+      Right ok -> do
+        markSubmittedBatch ctxt.pgPoolCT token ok.providerBatchUuidSO ok.providerRequestIDsSO claimList
+        -- FAST PATH: tell Poll immediately
+        ctxt.enqueuePollCT ok.providerBatchUuidSO
 
 
 claimEnteredRequests :: Pool.Pool -> Text -> UUID -> Int -> Int32 -> IO (Vector ClaimedRequest)
@@ -145,11 +153,14 @@ claimEnteredRequests pool nodeId token limitN ttlSec = do
 
 markSubmittedBatch :: Pool.Pool -> UUID -> UUID -> [(UUID, Text)] -> [ClaimedRequest] -> IO ()
 markSubmittedBatch pool token providerBatchUuid providerReqIds reqs = do
-  let lookupProv rid = lookup rid providerReqIds
+  let
+    lookupProv rid = lookup rid providerReqIds
   ei <- Es.execStmt pool $ do
           V.forM_ (V.fromList reqs) (\cr -> do
-            Tx.statement (cr.requestIDCR, token, (T.pack . Uu.toString ) providerBatchUuid, lookupProv cr.requestIDCR) Es.markSubmittedStmt
-            Tx.statement (cr.requestIDCR, "submitted" :: Text, submittedDetails providerBatchUuid (lookupProv cr.requestIDCR))
+            Tx.statement (cr.requestIDCR, token, (T.pack . Uu.toString ) providerBatchUuid
+                  , lookupProv cr.requestIDCR) Es.markSubmittedStmt
+            Tx.statement (cr.requestIDCR, "submitted" :: Text
+                  , submittedDetails providerBatchUuid (lookupProv cr.requestIDCR))
               Es.insertRequestEventStmt
             )
   case ei of
@@ -158,13 +169,13 @@ markSubmittedBatch pool token providerBatchUuid providerReqIds reqs = do
 
 
 submittedDetails :: UUID -> Maybe Text -> Value
-submittedDetails batchUuid mReqId =
-  Ae.object $
-    [ "event" Ae..= ("submitted" :: Text)
-    , "provider_batch_uuid" Ae..= batchUuid
-    ] <> case mReqId of
-           Nothing   -> []
-           Just ridT -> ["provider_request_id" Ae..= ridT]
+submittedDetails batchUuid mReqId = Ae.object $ [ 
+    "event" Ae..= ("submitted" :: Text)
+  , "provider_batch_uuid" Ae..= batchUuid
+  ]
+  <> case mReqId of
+        Nothing   -> []
+        Just ridT -> ["provider_request_id" Ae..= ridT]
 
 
 releaseClaimWithError :: Pool.Pool -> UUID -> SubmitError -> [ClaimedRequest] -> IO ()
@@ -181,9 +192,8 @@ releaseClaimWithError pool token submitErr reqs = do
 
 
 failureDetails :: Text -> Text -> Value
-failureDetails code msg =
-  Ae.object
-    [ "event" Ae..= ("submit_failed" :: Text)
-    , "error_code" Ae..= code
-    , "error_message" Ae..= msg
-    ]
+failureDetails code msg = Ae.object [ 
+    "event" Ae..= ("submit_failed" :: Text)
+  , "error_code" Ae..= code
+  , "error_message" Ae..= msg
+  ]

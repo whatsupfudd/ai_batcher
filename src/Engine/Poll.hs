@@ -34,12 +34,7 @@ import qualified Hasql.Transaction as Tx
 import qualified DB.EngineStmt as Es
 import qualified Engine.Runner as R
 
-data ProviderBatchStatus
-  = BatchRunning
-  | BatchCompleted
-  | BatchCancelled Text
-  | BatchFailed Text
-  deriving (Show, Eq, Generic)
+import Service.Types
 
 data PollError = PollError
   { codePE    :: Text
@@ -54,7 +49,7 @@ data Context = Context
   { pgPoolCT        :: Pool.Pool
   , nodeIdCT        :: Text
   , pollStatusCT    :: UUID -> IO (Either PollError ProviderBatchStatus)
-  , enqueueFetchCT  :: UUID -> IO ()
+  , enqueueFetchCT  :: UUID -> IO ()  -- Fast path to Engine.Fetch
   }
 
 data PollConfig = PollConfig

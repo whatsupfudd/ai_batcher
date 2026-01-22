@@ -15,6 +15,7 @@ data RunOptions = RunOptions {
     , serverHost :: Text
     , pgDbConf :: PgDbConfig
     , s3store :: Maybe S3Config
+    , provider :: Text
   }
   deriving (Show)
 
@@ -27,4 +28,5 @@ defaultRun homeDir server port = RunOptions {
     , serverPort = port
     , pgDbConf = defaultPgDbConf
     , s3store = Nothing
+    , provider = "openai"
   }

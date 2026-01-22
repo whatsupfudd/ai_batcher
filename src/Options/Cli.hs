@@ -23,10 +23,12 @@ data GlobalOptions = GlobalOptions {
   }
 
 data ProducerOpts = ProducerOpts {
-  templateIG :: FilePath
+  templateNameIG :: Text
+  , newTemplateSrcIG :: Maybe FilePath
   , sourceIG :: FilePath
   , productIG :: Text
   , versionIG :: Maybe Text
+  , providerIG :: Maybe Text
   }
   deriving (Show)
 
@@ -144,7 +146,10 @@ gendocOpts =
 
 producerOpts :: Parser ProducerOpts
 producerOpts =
-  ProducerOpts <$> strArgument (metavar "TEMPLATE_FILE" <> help "Template file to use for production.")
+  ProducerOpts
+    <$> strArgument (metavar "TEMPLATE_NAME" <> help "Name of template to use for production.")
+    <*> optional (strOption (long "template" <> short 't' <> metavar "TEMPLATE_FILE" <> help "Template file to use for production."))
     <*> strArgument (metavar "SOURCE_FILE" <> help "Source file to use for production.")
     <*> strArgument (metavar "PRODUCTION_NAME" <> help "Name to use for production.")
     <*> optional (strArgument (metavar "VERSION" <> help "Version to produce."))
+    <*> optional (strOption (long "provider" <> short 'p' <> metavar "PROVIDER" <> help "Provider to use for production."))

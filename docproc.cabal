@@ -66,6 +66,8 @@ library
       Options.ConfFile
       Options.Runtime
       Service.OpenAI
+      Service.Provider
+      Service.Types
   other-modules:
       Paths_docproc
   hs-source-dirs:

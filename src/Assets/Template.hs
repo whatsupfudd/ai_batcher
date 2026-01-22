@@ -8,9 +8,7 @@ import Control.Monad (forM, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Writer.Lazy (Writer)
 
-import Data.Bifunctor (first)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as Lbs
 import Data.Char (isSpace)
 import Data.Functor.Identity as Fi
 import Data.Int (Int32, Int64)
@@ -41,6 +39,7 @@ import Text.Ginger.Run.Type (Run)
 import Text.Ginger.GVal (GVal, dict, rawJSONToGVal, (~>))
 import Text.Ginger.AST as Ga
 
+import qualified Options.Cli as Cli
 import qualified DB.TemplateStmt as Ts
 import DB.EngineStmt (execStmt)
 
@@ -52,7 +51,7 @@ import DB.EngineStmt (execStmt)
 --   Plug your existing Minio/S3 + Hasql pool into this.
 data Context = Context {
     pgPoolCT :: Pool.Pool
-  , s3RepoCT :: ByteString -> IO UUID
+  , s3RepoCT :: Lbs.ByteString -> IO UUID
   -- ^ Must upload bytes to S3 and return the UUID "locator" used as the object name.
   }
 
@@ -82,72 +81,78 @@ data AssetTemplateError
 -- ^ template file path
 -- ^ source file path (concatenated items with TOML front matter)
 -- ^ production name
-ingestTemplate :: Context -> FilePath -> FilePath -> Text -> IO (Either AssetTemplateError UUID)
-ingestTemplate ctxt templatePath sourcePath productionName = do
-  putStrLn $ "Ingesting template: " <> templatePath
-  putStrLn $ "Ingesting source: " <> sourcePath
-  putStrLn $ "Ingesting production: " <> T.unpack productionName
-
-  tplBytes <- BS.readFile templatePath
-  srcBytes <- BS.readFile sourcePath
-
-  tplText <- either (throwIO . TemplateDecodeError . T.pack . show) pure (TE.decodeUtf8' tplBytes)
-  srcText <- either (throwIO . SourceDecodeError   . T.pack . show) pure (TE.decodeUtf8' srcBytes)
-
+ingestTemplate :: Context -> Cli.ProducerOpts -> IO (Either AssetTemplateError UUID)
+ingestTemplate ctxt prodOpts =
   let
-    templateName = T.pack (takeFileName templatePath)
-    sourceName = T.pack (takeFileName sourcePath)
+    mbTemplatePath = prodOpts.newTemplateSrcIG
+    templateName = prodOpts.templateNameIG
+    sourcePath = prodOpts.sourceIG
+    productionName = prodOpts.productIG
+  in do
+  putStrLn $ "@[ingestTemplate] starting: " <> show prodOpts <> "."
 
-  putStrLn $ "Template name: " <> T.unpack templateName
-  putStrLn $ "Source name: " <> T.unpack sourceName
+  case mbTemplatePath of
+    Nothing -> do
+      pure . Left $ TemplateDecodeError "Template reuse not implemented yet."
+    Just templatePath -> do
+      tplBytes <- Lbs.readFile templatePath
+      srcBytes <- Lbs.readFile sourcePath
 
-  -- Upload raw assets to S3
-  tplLoc <- ctxt.s3RepoCT tplBytes
-  srcLoc <- ctxt.s3RepoCT srcBytes
-  putStrLn $ "Template locator: " <> T.unpack (T.pack . Uu.toString $ tplLoc)
-  putStrLn $ "Source locator: " <> T.unpack (T.pack . Uu.toString $ srcLoc)
+      tplText <- either (throwIO . TemplateDecodeError . T.pack . show) pure (TE.decodeUtf8' . Lbs.toStrict $ tplBytes)
+      srcText <- either (throwIO . SourceDecodeError   . T.pack . show) pure (TE.decodeUtf8' . Lbs.toStrict $ srcBytes)
 
-  -- Parse ginger template (from memory).
-  -- Ginger's Source type is String; we keep filenames for better error messages.
-  tplRez <- parseGinger nullResolver (Just (T.unpack templateName)) (T.unpack tplText)
-  putStrLn $ "Ginger parse result: " <> show tplRez
-  case tplRez of
-    Left err -> pure . Left . GingerParseError . T.pack . show $ err
-    Right template ->
-      case parseSourceItems srcText of
-        Left err -> pure . Left . SourceParseError . T.pack . show $ err
-        Right items -> 
-          let
-            tplSize :: Int64
-            tplSize = fromIntegral (BS.length tplBytes)
-            srcSize :: Int64
-            srcSize = fromIntegral (BS.length srcBytes)
-          in do
-          result <- execStmt ctxt.pgPoolCT $ do
-            -- record S3 metadata
-            Tx.statement (tplLoc, "template" :: Text, tplSize) Ts.insertS3Object
-            Tx.statement (srcLoc, "source"   :: Text, srcSize) Ts.insertS3Object
+      let
+        templateName = T.pack (takeFileName templatePath)
+        sourceName = T.pack (takeFileName sourcePath)
 
-            -- asset rows
-            templateId <- Tx.statement (templateName, tplLoc) Ts.insertTemplate
-            sourceId   <- Tx.statement (sourceName,   srcLoc) Ts.insertSource
+      putStrLn $ "Template name: " <> T.unpack templateName
+      putStrLn $ "Source name: " <> T.unpack sourceName
 
-            -- production
-            productionId <- Tx.statement (productionName, templateId, sourceId) Ts.insertProduction
+      -- Upload raw assets to S3
+      tplLoc <- ctxt.s3RepoCT tplBytes
+      srcLoc <- ctxt.s3RepoCT srcBytes
+      putStrLn $ "Template locator: " <> T.unpack (T.pack . Uu.toString $ tplLoc)
+      putStrLn $ "Source locator: " <> T.unpack (T.pack . Uu.toString $ srcLoc)
 
-            -- requests
-            forM_ (zip [1..] items) $ \(idx, item) -> do
-                let
-                  rendered = renderRequest productionName idx item template
-                reqId <- Tx.statement (productionId, fromIntegral idx, item.metaJsonSI, rendered) Ts.insertRequest
-                Tx.statement (reqId, "entered" :: Text, mkEnteredDetails templateName sourceName idx item) Ts.insertRequestEvent
-                pure reqId
+      -- Parse ginger template (from memory).
+      -- Ginger's Source type is String; we keep filenames for better error messages.
+      tplRez <- parseGinger nullResolver (Just (T.unpack templateName)) (T.unpack tplText)
+      putStrLn $ "Ginger parse result: " <> show tplRez
+      case tplRez of
+        Left err -> pure . Left . GingerParseError . T.pack . show $ err
+        Right template ->
+          case parseSourceItems srcText of
+            Left err -> pure . Left . SourceParseError . T.pack . show $ err
+            Right items -> 
+              let
+                tplSize = Lbs.length tplBytes
+                srcSize = Lbs.length srcBytes
+              in do
+              result <- execStmt ctxt.pgPoolCT $ do
+                -- record S3 metadata
+                Tx.statement (tplLoc, "template" :: Text, tplSize) Ts.insertS3Object
+                Tx.statement (srcLoc, "source"   :: Text, srcSize) Ts.insertS3Object
 
-            pure productionId
+                -- asset rows
+                templateId <- Tx.statement (templateName, tplLoc) Ts.insertTemplate
+                sourceId   <- Tx.statement (sourceName,   srcLoc) Ts.insertSource
 
-          case result of
-            Left err -> pure . Left $ DbError (T.pack (show err))
-            Right anID -> pure $ Right anID
+                -- production
+                productionId <- Tx.statement (productionName, templateId, sourceId) Ts.insertProduction
+
+                -- requests
+                forM_ (zip [1..] items) $ \(idx, item) -> do
+                    let
+                      rendered = renderRequest productionName idx item template
+                    reqId <- Tx.statement (productionId, fromIntegral idx, item.metaJsonSI, rendered) Ts.insertRequest
+                    Tx.statement (reqId, "entered" :: Text, mkEnteredDetails templateName sourceName idx item) Ts.insertRequestEvent
+                    pure reqId
+
+                pure productionId
+
+              case result of
+                Left err -> pure . Left $ DbError (T.pack (show err))
+                Right anID -> pure $ Right anID
 
 
 nullResolver :: IncludeResolver IO
