@@ -70,6 +70,7 @@ dependencies:
   - hasql
   - hasql-th
   - hasql-pool
+  - hasql-transaction
   - uuid
   # For doc parsing:
   - case-insensitive
@@ -89,11 +90,16 @@ dependencies:
   - base64-bytestring
   # For Job Queue:
   - stm
+  - async
   # For Distributed Computing:
   - distributed-process
   - distributed-process-simplelocalnet
   - binary
   - network-transport-tcp
+  # For templating:
+  - ginger
+  # For overall logic:
+  - transformers
 
 
 default-extensions:

@@ -36,6 +36,7 @@ runWithOptions cliOptions fileOptions = do
             Opt.PostPCmd inPath -> Cmd.doPostP inPath
             Opt.GenDocsCmd inHtml outPrefix -> Cmd.doGenDocs inHtml outPrefix
             Opt.ServerCmd -> Cmd.serverCmd
+            Opt.ProducerCmd prodOpts -> Cmd.produceCmd prodOpts
       rtOptions <- Opt.mergeOptions cliOptions fileOptions envOptions
       result <- cmdExecutor rtOptions
       -- TODO: return a properly kind of conclusion.

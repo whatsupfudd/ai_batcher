@@ -7,6 +7,7 @@ module Commands  (
   , module Commands.PostP
   , module Commands.GenDocs
   , module Commands.Server
+  , module Commands.Producer
  )
 where
 
@@ -18,5 +19,6 @@ import Commands.Load
 import Commands.PostP
 import Commands.GenDocs
 import Commands.Server
+import Commands.Producer
 -- HERE: import 
 

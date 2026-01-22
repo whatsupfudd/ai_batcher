@@ -37,6 +37,7 @@ library
       Api.Types
       Assets.S3Ops
       Assets.Storage
+      Assets.Template
       Assets.Types
       Commands
       Commands.Extract
@@ -45,10 +46,14 @@ library
       Commands.Help
       Commands.Load
       Commands.PostP
+      Commands.Producer
       Commands.Server
       Commands.Version
       DB.Connect
       DB.Opers
+      Engine.Fetch
+      Engine.Poll
+      Engine.Submit
       HttpSup.CorsPolicy
       HttpSup.JWT
       MainLogic
@@ -56,6 +61,7 @@ library
       Options.Cli
       Options.ConfFile
       Options.Runtime
+      Service.OpenAI
   other-modules:
       Paths_docproc
   hs-source-dirs:
@@ -68,6 +74,7 @@ library
   build-depends:
       aeson
     , aeson-pretty
+    , async
     , base >=4.7 && <5
     , base64-bytestring
     , binary
@@ -83,10 +90,12 @@ library
     , doctemplates
     , exceptions
     , filepath
+    , ginger
     , gitrev
     , hasql
     , hasql-pool
     , hasql-th
+    , hasql-transaction
     , http-client
     , http-client-multipart
     , http-client-tls
@@ -115,6 +124,7 @@ library
     , tagsoup
     , text
     , time
+    , transformers
     , unix
     , unliftio
     , uuid
@@ -140,6 +150,7 @@ executable docproc
   build-depends:
       aeson
     , aeson-pretty
+    , async
     , base >=4.7 && <5
     , base64-bytestring
     , binary
@@ -156,10 +167,12 @@ executable docproc
     , doctemplates
     , exceptions
     , filepath
+    , ginger
     , gitrev
     , hasql
     , hasql-pool
     , hasql-th
+    , hasql-transaction
     , http-client
     , http-client-multipart
     , http-client-tls
@@ -188,6 +201,7 @@ executable docproc
     , tagsoup
     , text
     , time
+    , transformers
     , unix
     , unliftio
     , uuid
@@ -214,6 +228,7 @@ test-suite docproc-test
   build-depends:
       aeson
     , aeson-pretty
+    , async
     , base >=4.7 && <5
     , base64-bytestring
     , binary
@@ -230,10 +245,12 @@ test-suite docproc-test
     , doctemplates
     , exceptions
     , filepath
+    , ginger
     , gitrev
     , hasql
     , hasql-pool
     , hasql-th
+    , hasql-transaction
     , http-client
     , http-client-multipart
     , http-client-tls
@@ -262,6 +279,7 @@ test-suite docproc-test
     , tagsoup
     , text
     , time
+    , transformers
     , unix
     , unliftio
     , uuid
