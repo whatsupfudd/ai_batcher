@@ -1,8 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE RecordWildCards #-}
 
 module Engine.Submit where
 
@@ -34,6 +32,8 @@ import qualified Hasql.Transaction.Sessions as TxS
 import Hasql.Statement (Statement)
 import Hasql.TH
 
+import qualified DB.EngineStmt as Es
+
 --------------------------------------------------------------------------------
 -- Public types
 
@@ -52,11 +52,11 @@ data Context = Context
   }
 
 data SubmitConfig = SubmitConfig
-  { scPollIntervalMicros :: Int
-  , scBatchSize          :: Int
-  , scQueueDepth         :: Int
-  , scWorkerCount        :: Int
-  , scClaimTtlSeconds    :: Int32
+  { pollIntervalMicrosSC :: Int
+  , batchSizeSC          :: Int
+  , queueDepthSC         :: Int
+  , workerCountSC        :: Int
+  , claimTtlSecondsSC    :: Int32
   }
   deriving (Show, Eq, Generic)
 
@@ -67,34 +67,33 @@ data SubmitOutcome
 
 -- Returned by your AI service integration layer (adapt as needed).
 data SubmitOk = SubmitOk
-  { soProviderBatchId    :: Text
-  , soProviderRequestIds :: [(UUID, Text)]
+  { providerBatchIDSO    :: Text
+  , providerRequestIDsSO :: [(UUID, Text)]
   -- ^ Optional mapping (request_id -> provider_request_id).
   }
   deriving (Show, Eq, Generic)
 
 data SubmitError = SubmitError
-  { seCode    :: Text
-  , seMessage :: Text
+  {  codeSE    :: Text
+  , messageSE :: Text
   }
   deriving (Show, Eq, Generic)
 
-newtype SubmitEngineError
-  = DbError Text
+newtype SubmitEngineError = DbError Text
   deriving (Show, Eq, Generic, Exception)
 
 --------------------------------------------------------------------------------
 -- Internal job model
 
 data ClaimedRequest = ClaimedRequest
-  { crRequestId   :: UUID
-  , crRequestText :: Text
+  { requestIDCR   :: UUID
+  , requestTextCR :: Text
   }
   deriving (Show, Eq, Generic)
 
 data SubmitJob = SubmitJob
-  { sjClaimToken :: UUID
-  , sjRequests   :: NonEmpty ClaimedRequest
+  { claimTokenSJ :: UUID
+  , requestsSJ   :: NonEmpty ClaimedRequest
   }
   deriving (Show, Eq, Generic)
 
@@ -108,11 +107,11 @@ startSubmitEngine env cfg = async (runSubmitEngine env cfg)
 --   - 1 poller thread (claims rows and enqueues SubmitJob)
 --   - N worker threads (consume queue and call sendRequestCT)
 runSubmitEngine :: Context -> SubmitConfig -> IO ()
-runSubmitEngine ctxt submitCfg = do
-  q <- newTBQueueIO (fromIntegral submitCfg.scQueueDepth)
+runSubmitEngine ctxt cfg = do
+  q <- newTBQueueIO (fromIntegral cfg.queueDepthSC)
 
-  pollerA <- async (pollerLoop ctxt submitCfg q)
-  workers <- mapM (\i -> async (workerLoop ctxt submitCfg i q)) [1 .. submitCfg.scWorkerCount]
+  pollerA <- async (pollerLoop ctxt cfg q)
+  workers <- mapM (\i -> async (workerLoop ctxt cfg i q)) [1 .. cfg.workerCountSC]
 
   -- Fail-fast: if any thread dies, kill the whole engine.
   link pollerA
@@ -125,12 +124,12 @@ runSubmitEngine ctxt submitCfg = do
 -- Poller
 
 pollerLoop :: Context -> SubmitConfig -> TBQueue SubmitJob -> IO ()
-pollerLoop ctxt submitCfg q = forever $ do
+pollerLoop ctxt cfg q = forever $ do
   claimToken <- nextRandom
-  claimed <- claimEnteredRequests ctxt.pgPoolCT ctxt.nodeIdCT claimToken submitCfg.scBatchSize submitCfg.scClaimTtlSeconds
+  claimed <- claimEnteredRequests ctxt.pgPoolCT ctxt.nodeIdCT claimToken cfg.batchSizeSC cfg.claimTtlSecondsSC
 
   if V.null claimed then
-    threadDelay submitCfg.scPollIntervalMicros
+    threadDelay cfg.pollIntervalMicrosSC
   else
     let
       neList = NE.fromList (V.toList claimed)
@@ -141,57 +140,32 @@ pollerLoop ctxt submitCfg q = forever $ do
 -- node id, claim token, limit, ttl seconds
 claimEnteredRequests :: Pool.Pool -> Text -> UUID -> Int -> Int32 -> IO (Vector ClaimedRequest)
 claimEnteredRequests pool nodeId token limitN ttlSec = do
-  let
-    session =
-        TxS.transaction TxS.ReadCommitted TxS.Write $ do
-          rows <- Tx.statement (fromIntegral limitN, nodeId, token, ttlSec) claimRequestsStmt
-          pure (V.map (uncurry ClaimedRequest) rows)
+  eiRez <- Es.execStmt pool $ do
+            rows <- Tx.statement (fromIntegral limitN, nodeId, token, ttlSec) Es.claimRequestsStmt
+            pure (V.map (uncurry ClaimedRequest) rows)
 
-  eiRez <- Pool.use pool session
   case eiRez of
     Left e  -> throwIO (DbError (T.pack (show e)))
     Right x -> pure x
 
--- Returns (request_id, request_text)
-claimRequestsStmt :: Statement (Int32, Text, UUID, Int32) (Vector (UUID, Text))
-claimRequestsStmt =
-  [vectorStatement|
-    with picked as (
-      select r.request_id, r.request_text
-      from batcher.requests r
-      where r.state = 'entered'
-        and (r.submit_claimed_until is null or r.submit_claimed_until < now())
-      order by r.created_at asc
-      limit $1 :: int4
-      for update skip locked
-    )
-    update batcher.requests u
-      set submit_claimed_by    = $2 :: text,
-          submit_claim_token   = $3 :: uuid,
-          submit_claimed_until = now() + make_interval(secs => $4 :: int4),
-          updated_at           = now()
-    from picked
-    where u.request_id = picked.request_id
-    returning u.request_id :: uuid, picked.request_text :: text
-  |]
 
 --------------------------------------------------------------------------------
 -- Worker
-
 workerLoop :: Context -> SubmitConfig -> Int -> TBQueue SubmitJob -> IO ()
-workerLoop ctxt submitCfg workerIx q = forever $ do
+workerLoop ctxt cfg workerIx q = forever $ do
   job <- atomically (readTBQueue q)
   let reqPairs :: NonEmpty (UUID, Text)
       reqPairs =
-        NE.map (\ClaimedRequest{..} -> (crRequestId, crRequestText)) (sjRequests job)
+        NE.map (\claimedReq -> (claimedReq.requestIDCR, claimedReq.requestTextCR)) job.requestsSJ
 
   outcome <- ctxt.sendRequestCT reqPairs
 
   case outcome of
-    Right SubmitOk{..} -> do
-      markSubmittedBatch ctxt.pgPoolCT (sjClaimToken job) soProviderBatchId soProviderRequestIds (NE.toList (sjRequests job))
+    Right submitOk -> do
+      markSubmittedBatch ctxt.pgPoolCT job.claimTokenSJ submitOk.providerBatchIDSO submitOk.providerRequestIDsSO (NE.toList job.requestsSJ)
     Left err -> do
-      releaseClaimWithError ctxt.pgPoolCT (sjClaimToken job) err (NE.toList (sjRequests job))
+      releaseClaimWithError ctxt.pgPoolCT job.claimTokenSJ err (NE.toList job.requestsSJ)
+
 
 -- Success path: set state=submitted, store provider ids, clear claim, write events.
 markSubmittedBatch
@@ -204,19 +178,18 @@ markSubmittedBatch
 markSubmittedBatch pool token providerBatchId providerReqIds reqs = do
   let
     lookupProv rid = lookup rid providerReqIds
-    session =
-        TxS.transaction TxS.ReadCommitted TxS.Write $ do
-          -- update + event per request (simple and reliable for v1; optimize later if needed)
-          mapM_ (\ClaimedRequest{..} -> do
-                Tx.statement (crRequestId, token, providerBatchId, lookupProv crRequestId) markSubmittedStmt
-                Tx.statement (crRequestId, "submitted" :: Text, submittedDetails providerBatchId (lookupProv crRequestId))
-                  insertRequestEventStmt
-            ) reqs
 
-  r <- Pool.use pool session
-  case r of
+  eiRez <- Es.execStmt pool $ do
+          -- update + event per request (simple and reliable for v1; optimize later if needed)
+          mapM_ (\claimedReq -> do
+                Tx.statement (claimedReq.requestIDCR, token, providerBatchId, lookupProv claimedReq.requestIDCR) Es.markSubmittedStmt
+                Tx.statement (claimedReq.requestIDCR, "submitted" :: Text, submittedDetails providerBatchId (lookupProv claimedReq.requestIDCR))
+                  Es.insertRequestEventStmt
+            ) reqs
+  case eiRez of
     Left e  -> throwIO (DbError (T.pack (show e)))
     Right _ -> pure ()
+
 
 submittedDetails :: Text -> Maybe Text -> Value
 submittedDetails batchId mReqId =
@@ -227,6 +200,7 @@ submittedDetails batchId mReqId =
            Nothing -> []
            Just aText  -> ["provider_request_id" Ae..= aText]
 
+
 -- Failure path: clear claim, keep state=entered, write an event noting the failure.
 releaseClaimWithError
   :: Pool.Pool
@@ -234,16 +208,13 @@ releaseClaimWithError
   -> SubmitError
   -> [ClaimedRequest]
   -> IO ()
-releaseClaimWithError pool token SubmitError{..} reqs = do
-  let session =
-        TxS.transaction TxS.ReadCommitted TxS.Write $ do
-          mapM_ (\ClaimedRequest{..} -> do
-                Tx.statement (crRequestId, token) releaseClaimStmt
-                Tx.statement (crRequestId, "entered" :: Text, failureDetails seCode seMessage)
-                  insertRequestEventStmt
+releaseClaimWithError pool token submitErr reqs = do
+  eiRez <- Es.execStmt pool $ do
+          mapM_ (\claimedReq -> do
+                Tx.statement (claimedReq.requestIDCR, token) Es.releaseClaimStmt
+                Tx.statement (claimedReq.requestIDCR, "entered" :: Text, failureDetails submitErr.codeSE submitErr.messageSE)
+                  Es.insertRequestEventStmt
             ) reqs
-
-  eiRez <- Pool.use pool session
   case eiRez of
     Left e  -> throwIO (DbError (T.pack (show e)))
     Right _ -> pure ()
@@ -255,45 +226,3 @@ failureDetails code msg = Ae.object [
     , "error_code" Ae..= code
     , "error_message" Ae..= msg
     ]
-
---------------------------------------------------------------------------------
--- DB statements
-
--- Only updates if claim token matches (prevents stale worker updates).
-markSubmittedStmt :: Statement (UUID, UUID, Text, Maybe Text) ()
-markSubmittedStmt =
-  [resultlessStatement|
-    update batcher.requests set
-      state = 'submitted',
-      provider_batch_id = $3 :: text,
-      provider_request_id = $4 :: text?,
-      submit_claimed_until = null,
-      submit_claimed_by = null,
-      submit_claim_token = null,
-      updated_at = now()
-     where request_id = $1 :: uuid
-       and submit_claim_token = $2 :: uuid
-  |]
-
-
-releaseClaimStmt :: Statement (UUID, UUID) ()
-releaseClaimStmt =
-  [resultlessStatement|
-    update batcher.requests set 
-      submit_claimed_until = null,
-      submit_claimed_by = null,
-      submit_claim_token = null,
-      updated_at = now()
-     where request_id = $1 :: uuid
-       and submit_claim_token = $2 :: uuid
-  |]
-
-
-insertRequestEventStmt :: Statement (UUID, Text, Value) ()
-insertRequestEventStmt =
-  [resultlessStatement|
-    insert into batcher.request_events
-      (request_id, state, details)
-    values
-      ($1::uuid, $2::text::batcher.request_state, $3::jsonb)
-  |]

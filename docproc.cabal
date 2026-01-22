@@ -50,6 +50,7 @@ library
       Commands.Server
       Commands.Version
       DB.Connect
+      DB.EngineStmt
       DB.Opers
       Engine.Fetch
       Engine.Poll

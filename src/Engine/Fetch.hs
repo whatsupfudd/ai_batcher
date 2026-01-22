@@ -1,7 +1,5 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE RecordWildCards #-}
 
 module Engine.Fetch where
 
@@ -28,18 +26,20 @@ import qualified Hasql.Transaction.Sessions as TxS
 import Hasql.Statement (Statement)
 import Hasql.TH
 
+import qualified DB.EngineStmt as Es
+
+
 --------------------------------------------------------------------------------
 -- Public API
 
 -- | Provider fetch error (align this to your Service.AiSystem error code).
 data FetchError = FetchError
-  { feCode    :: Text
-  , feMessage :: Text
+  { codeFE    :: Text
+  , messageFE :: Text
   }
   deriving (Show, Eq, Generic)
 
-newtype FetchEngineError
-  = DbError Text
+newtype FetchEngineError = DbError Text
   deriving (Show, Eq, Generic, Exception)
 
 -- | Env wires DB + S3 + provider + next-stage queue.
@@ -56,35 +56,38 @@ data Context = Context
   }
 
 data FetchConfig = FetchConfig
-  { fcPollOutboxIntervalMicros :: Int   -- how often to scan durable outbox
-  , fcMaxBatchesPerTick        :: Int   -- claim up to this many outbox rows per tick
-  , fcQueueDepth               :: Int   -- bounded in-memory queue depth
-  , fcWorkerCount              :: Int   -- number of fetch workers
-  , fcClaimTtlSeconds          :: Int32 -- lease duration for outbox claims
-  , fcErrorBackoffSeconds      :: Int32 -- if provider fetch fails, delay retries by this many seconds
+  { pollOutboxIntervalMicrosFC :: Int   -- how often to scan durable outbox
+  , maxBatchesPerTickFC        :: Int   -- claim up to this many outbox rows per tick
+  , queueDepthFC               :: Int   -- bounded in-memory queue depth
+  , workerCountFC              :: Int   -- number of fetch workers
+  , claimTtlSecondsFC          :: Int32 -- lease duration for outbox claims
+  , errorBackoffSecondsFC      :: Int32 -- if provider fetch fails, delay retries by this many seconds
   }
   deriving (Show, Eq, Generic)
 
 data FetchHandle = FetchHandle
-  { fhAsync   :: Async ()
-  , fhEnqueue :: UUID -> IO ()
+  { asyncFH   :: Async ()
+  , enqueueFH :: UUID -> IO ()
   -- ^ Enqueue a batch UUID (fast path from Engine.Poll).
   }
+
 
 -- | Start Engine.Fetch with an internal queue.
 --   Returns a handle including an enqueue function for Engine.Poll to call.
 startFetchEngine :: Context -> FetchConfig -> IO FetchHandle
-startFetchEngine env cfg@FetchConfig{..} = do
-  q <- newTBQueueIO (fromIntegral fcQueueDepth)
+startFetchEngine env cfg = do
+  q <- newTBQueueIO (fromIntegral cfg.queueDepthFC)
   a <- async (runFetchEngineWithQueue env cfg q)
-  let enqueueFn batchUuid = atomically (writeTBQueue q (FetchJob batchUuid Nothing))
-  pure FetchHandle { fhAsync = a, fhEnqueue = enqueueFn }
+  pure FetchHandle { asyncFH = a
+        , enqueueFH = \batchUuid -> atomically (writeTBQueue q (FetchJob batchUuid Nothing))
+    }
+
 
 -- | Run using a provided queue (if you want to manage it elsewhere).
 runFetchEngineWithQueue :: Context -> FetchConfig -> TBQueue FetchJob -> IO ()
-runFetchEngineWithQueue env@Context{..} cfg@FetchConfig{..} q = do
-  outboxClaimerA <- async (outboxClaimerLoop env cfg q)
-  workersA <- mapM (\i -> async (workerLoop env cfg i q)) [1 .. fcWorkerCount]
+runFetchEngineWithQueue ctxt cfg q = do
+  outboxClaimerA <- async (outboxClaimerLoop ctxt cfg q)
+  workersA <- mapM (\i -> async (workerLoop ctxt cfg i q)) [1 .. cfg.workerCountFC]
 
   link outboxClaimerA
   mapM_ link workersA
@@ -95,8 +98,8 @@ runFetchEngineWithQueue env@Context{..} cfg@FetchConfig{..} q = do
 -- Jobs
 
 data FetchJob = FetchJob
-  { fjBatchUuid  :: UUID
-  , fjClaimToken :: Maybe UUID
+  { batchUuidFJ  :: UUID
+  , claimTokenFJ :: Maybe UUID
   }
   deriving (Show, Eq, Generic)
 
@@ -104,45 +107,22 @@ data FetchJob = FetchJob
 -- Durable outbox claimer
 
 outboxClaimerLoop :: Context -> FetchConfig -> TBQueue FetchJob -> IO ()
-outboxClaimerLoop Context{..} FetchConfig{..} q = forever $ do
+outboxClaimerLoop ctxt cfg q = forever $ do
   token <- nextRandom
-  batches <- claimFetchOutboxMany pgPoolCT nodeIdCT token fcMaxBatchesPerTick fcClaimTtlSeconds
+  batches <- claimFetchOutboxMany ctxt.pgPoolCT ctxt.nodeIdCT token cfg.maxBatchesPerTickFC cfg.claimTtlSecondsFC
   if null batches
-    then threadDelay fcPollOutboxIntervalMicros
+    then threadDelay cfg.pollOutboxIntervalMicrosFC
     else atomically $ mapM_ (\b -> writeTBQueue q (FetchJob b (Just token))) batches
 
 claimFetchOutboxMany :: Pool.Pool -> Text -> UUID
             -> Int -> Int32 -> IO (Vector UUID)
 claimFetchOutboxMany pool nodeId token limitN ttlSec = do
-  let
-    session = TxS.transaction TxS.ReadCommitted TxS.Write $
-          Tx.statement (fromIntegral limitN, nodeId, token, ttlSec) claimFetchOutboxManyStmt
-
-  eiRez <- Pool.use pool session
+  eiRez <- Es.execStmt pool $
+          Tx.statement (fromIntegral limitN, nodeId, token, ttlSec) Es.claimFetchOutboxManyStmt
   case eiRez of
     Left err  -> throwIO (DbError (T.pack (show err)))
     Right aVector -> pure aVector
 
-
-claimFetchOutboxManyStmt :: Statement (Int32, Text, UUID, Int32) (Vector UUID)
-claimFetchOutboxManyStmt =
-  [vectorStatement|
-    with picked as (
-      select o.provider_batch_uuid
-        from batcher.fetch_outbox o
-       where (o.fetch_claimed_until is null or o.fetch_claimed_until < now())
-       order by o.created_at asc
-       limit $1 :: int4
-       for update skip locked
-    )
-    update batcher.fetch_outbox o
-       set fetch_claimed_by    = $2 :: text,
-           fetch_claim_token   = $3 :: uuid,
-           fetch_claimed_until = now() + make_interval(secs => $4 :: int4)
-      from picked p
-     where o.provider_batch_uuid = p.provider_batch_uuid
-     returning o.provider_batch_uuid :: uuid
-  |]
 
 -- For fast-path jobs that were enqueued by Engine.Poll (no claim token yet):
 claimFetchOutboxOne
@@ -153,90 +133,73 @@ claimFetchOutboxOne
   -> Int32
   -> IO Bool
 claimFetchOutboxOne pool nodeId token batchUuid ttlSec = do
-  let
-    session = TxS.transaction TxS.ReadCommitted TxS.Write $
-            Tx.statement (batchUuid, nodeId, token, ttlSec) claimFetchOutboxOneStmt
-
-  eiRez <- Pool.use pool session
+  eiRez <- Es.execStmt pool $
+          Tx.statement (batchUuid, nodeId, token, ttlSec) Es.claimFetchOutboxOneStmt
   case eiRez of
     Left err  -> throwIO (DbError (T.pack (show err)))
     Right aVector -> pure (not (null aVector))
 
 
-claimFetchOutboxOneStmt :: Statement (UUID, Text, UUID, Int32) (Vector UUID)
-claimFetchOutboxOneStmt =
-  [vectorStatement|
-    update batcher.fetch_outbox
-       set fetch_claimed_by    = $2 :: text,
-           fetch_claim_token   = $3 :: uuid,
-           fetch_claimed_until = now() + make_interval(secs => $4 :: int4)
-     where provider_batch_uuid = $1 :: uuid
-       and (fetch_claimed_until is null or fetch_claimed_until < now())
-     returning provider_batch_uuid :: uuid
-  |]
-
 --------------------------------------------------------------------------------
 -- Worker
 
 workerLoop :: Context -> FetchConfig -> Int -> TBQueue FetchJob -> IO ()
-workerLoop env@Context{..} FetchConfig{..} _workerIx q = forever $ do
-  FetchJob{..} <- atomically (readTBQueue q)
+workerLoop ctxt cfg _workerIx q = forever $ do
+  job <- atomically (readTBQueue q)
 
   -- Ensure we own a durable outbox claim for this batch (single-worker guarantee).
-  (token, claimed) <- case fjClaimToken of
+  (token, claimed) <- case job.claimTokenFJ of
     Just t  -> pure (t, True)
     Nothing -> do
       t <- nextRandom
-      ok <- claimFetchOutboxOne pgPoolCT nodeIdCT t fjBatchUuid fcClaimTtlSeconds
+      ok <- claimFetchOutboxOne ctxt.pgPoolCT ctxt.nodeIdCT t job.batchUuidFJ cfg.claimTtlSecondsFC
       pure (t, ok)
 
-  if not claimed
-    then pure ()  -- already claimed/processed elsewhere (or outbox row missing)
-    else do
-      res <- fetchBatchCT fjBatchUuid
-      case res of
-        Left err -> do
-          -- Log failure against requests (best-effort) and release claim with backoff.
-          noteFetchFailed pgPoolCT fjBatchUuid err
-          releaseFetchOutboxClaim pgPoolCT token fjBatchUuid fcErrorBackoffSeconds
+  if not claimed then
+    pure ()  -- already claimed/processed elsewhere (or outbox row missing)
+  else do
+    res <- ctxt.fetchBatchCT job.batchUuidFJ
+    case res of
+      Left err -> do
+        -- Log failure against requests (best-effort) and release claim with backoff.
+        noteFetchFailed ctxt.pgPoolCT job.batchUuidFJ err
+        releaseFetchOutboxClaim ctxt.pgPoolCT token job.batchUuidFJ cfg.errorBackoffSecondsFC
 
-        Right rawJson -> do
-          let bytes = Aeson.encode rawJson
-              sz :: Int64
-              sz = BL.length bytes
+      Right rawJson -> do
+        let bytes = Aeson.encode rawJson
+            sz :: Int64
+            sz = BL.length bytes
 
-          loc <- s3RepoCT bytes
+        loc <- ctxt.s3RepoCT bytes
 
-          -- Persist S3 metadata + attach locator to requests + emit events + delete outbox (token protected).
-          reqIds <- persistRawAndAttach pgPoolCT token fjBatchUuid loc sz
+        -- Persist S3 metadata + attach locator to requests + emit events + delete outbox (token protected).
+        reqIds <- persistRawAndAttach ctxt.pgPoolCT token job.batchUuidFJ loc sz
 
-          -- Push per-request downstream.
-          mapM_ enqueueGenDocCT reqIds
+        -- Push per-request downstream.
+        mapM_ ctxt.enqueueGenDocCT reqIds
+
 
 --------------------------------------------------------------------------------
 -- DB serialization / updates
 
 persistRawAndAttach :: Pool.Pool -> UUID -> UUID -> UUID -> Int64 -> IO (Vector UUID)
 persistRawAndAttach pool token batchUuid rawLoc bytesSz = do
-  let session =
-        TxS.transaction TxS.ReadCommitted TxS.Write $ do
-          -- record the raw result object in S3 metadata index
-          Tx.statement (rawLoc, "raw_result" :: Text, bytesSz, "application/json" :: Text) insertS3ObjectStmt
+  eiRez <- Es.execStmt pool $ do
+    Tx.statement (rawLoc, "raw_result" :: Text, bytesSz, "application/json" :: Text) Es.insertS3ObjectStmt
 
-          -- attach locator to completed requests for this batch (idempotent if already set)
-          reqIds <- Tx.statement (batchUuid, rawLoc) attachRawLocatorStmt
+    -- attach locator to completed requests for this batch (idempotent if already set)
+    reqIds <- Tx.statement (batchUuid, rawLoc) Es.attachRawLocatorStmt
 
-          -- event per request
-          mapM_ (\rid ->
-                Tx.statement (rid, "completed" :: Text, rawFetchedDetails batchUuid rawLoc)
-                  insertRequestEventStmt
-            ) reqIds
+    -- event per request
+    mapM_ (\rid ->
+          Tx.statement (rid, "completed" :: Text, rawFetchedDetails batchUuid rawLoc)
+            Es.insertRequestEventStmt
+      ) reqIds
 
-          -- delete outbox row only if our token matches (prevents double-delete races)
-          Tx.statement (batchUuid, token) deleteFetchOutboxStmt
-          pure reqIds
+    -- delete outbox row only if our token matches (prevents double-delete races)
+    Tx.statement (batchUuid, token) Es.deleteFetchOutboxStmt
+    pure reqIds
 
-  eiRez <- Pool.use pool session
   case eiRez of
     Left err  -> throwIO (DbError (T.pack (show err)))
     Right aVector -> pure aVector
@@ -249,89 +212,29 @@ rawFetchedDetails batchUuid rawLoc = Aeson.object [
   , "raw_result_locator"  .= rawLoc
   ]
 
-
--- Attach raw_result_locator to requests in that batch (only those completed).
--- We do "set if null" so repeat fetches are harmless.
-attachRawLocatorStmt :: Statement (UUID, UUID) (Vector UUID)
-attachRawLocatorStmt = [vectorStatement|
-    update batcher.requests
-       set raw_result_locator = coalesce(raw_result_locator, $2 :: uuid),
-           updated_at         = now()
-     where provider_batch_uuid = $1 :: uuid
-       and state              = 'completed'
-     returning request_id :: uuid
-  |]
-
-
-insertS3ObjectStmt :: Statement (UUID, Text, Int64, Text) ()
-insertS3ObjectStmt = [resultlessStatement|
-    insert into batcher.s3_objects (locator, kind, bytes, content_type)
-    values ($1 :: uuid, $2 :: text, $3 :: int8, $4 :: text)
-    on conflict (locator) do nothing
-  |]
-
-
-insertRequestEventStmt :: Statement (UUID, Text, Value) ()
-insertRequestEventStmt = [resultlessStatement|
-    insert into batcher.request_events (request_id, state, details)
-    values ($1::uuid, $2::text::batcher.request_state, $3::jsonb)
-  |]
-
-
-deleteFetchOutboxStmt :: Statement (UUID, UUID) ()
-deleteFetchOutboxStmt = [resultlessStatement|
-    delete from batcher.fetch_outbox
-     where provider_batch_uuid = $1 :: uuid
-       and fetch_claim_token   = $2 :: uuid
-  |]
-
 releaseFetchOutboxClaim :: Pool.Pool -> UUID -> UUID -> Int32 -> IO ()
 releaseFetchOutboxClaim pool token batchUuid backoffSec = do
-  let
-    session = TxS.transaction TxS.ReadCommitted TxS.Write $
-          Tx.statement (batchUuid, token, backoffSec) releaseFetchOutboxClaimStmt
-  eiRez <- Pool.use pool session
+  eiRez <- Es.execStmt pool $
+          Tx.statement (batchUuid, token, backoffSec) Es.releaseFetchOutboxClaimStmt
   case eiRez of
     Left err  -> throwIO (DbError (T.pack (show err)))
     Right _ -> pure ()
-
-releaseFetchOutboxClaimStmt :: Statement (UUID, UUID, Int32) ()
-releaseFetchOutboxClaimStmt = [resultlessStatement|
-    update batcher.fetch_outbox
-       set fetch_claimed_by    = null,
-           fetch_claim_token   = null,
-           fetch_claimed_until = now() + make_interval(secs => $3 :: int4)
-     where provider_batch_uuid = $1 :: uuid
-       and fetch_claim_token   = $2 :: uuid
-  |]
 
 --------------------------------------------------------------------------------
 -- Failure logging (best-effort)
 
 noteFetchFailed :: Pool.Pool -> UUID -> FetchError -> IO ()
-noteFetchFailed pool batchUuid FetchError{..} = do
-  let
-    session = TxS.transaction TxS.ReadCommitted TxS.Write $ do
-      reqIds <- Tx.statement batchUuid listRequestsForBatchStmt
+noteFetchFailed pool batchUuid fetchErr = do
+  eiRez <- Es.execStmt pool $ do
+      reqIds <- Tx.statement batchUuid Es.listRequestsForBatchStmt
       let
         details = Aeson.object [ 
                 "event" .= ("fetch_failed" :: Text)
               , "provider_batch_uuid" .= batchUuid
-              , "error_code" .= feCode
-              , "error_message" .= feMessage
+              , "error_code" .= fetchErr.codeFE
+              , "error_message" .= fetchErr.messageFE
               ]
-      mapM_ (\rid -> Tx.statement (rid, "completed" :: Text, details) insertRequestEventStmt) reqIds
-
-  eiRez <- Pool.use pool session
+      mapM_ (\rid -> Tx.statement (rid, "completed" :: Text, details) Es.insertRequestEventStmt) reqIds
   case eiRez of
     Left _  -> pure () -- don't crash engine for logging failures
     Right _ -> pure ()
-
-
-listRequestsForBatchStmt :: Statement UUID (Vector UUID)
-listRequestsForBatchStmt = [vectorStatement|
-    select request_id :: uuid
-      from batcher.requests
-     where provider_batch_uuid = $1 :: uuid
-       and state = 'completed'
-  |]
