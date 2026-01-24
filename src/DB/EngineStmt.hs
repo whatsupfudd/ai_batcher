@@ -150,25 +150,13 @@ markBatchCancelledStmt =
      returning request_id :: uuid
   |]
 
-clearPollClaimBatchStmt :: Statement (UUID, UUID) ()
-clearPollClaimBatchStmt =
-  [resultlessStatement|
-    update batcher.requests
-       set poll_claimed_until = null,
-           poll_claimed_by    = null,
-           poll_claim_token   = null,
-           updated_at         = now()
-     where provider_batch_uuid = $1 :: uuid
-       and poll_claim_token    = $2 :: uuid
-  |]
-
 
 insertFetchOutboxStmt :: Statement UUID ()
 insertFetchOutboxStmt =
   [resultlessStatement|
-    insert into batcher.fetch_outbox (provider_batch_uuid)
-    values ($1 :: uuid)
-    on conflict (provider_batch_uuid) do nothing
+    insert into batcher.fetch_outbox (batch_fk)
+    values ($1::uuid)
+    on conflict (batch_fk) do nothing
   |]
 
 
@@ -177,33 +165,44 @@ claimFetchOutboxManyStmt :: Statement (Int32, Text, UUID, Int32) (Vector UUID)
 claimFetchOutboxManyStmt =
   [vectorStatement|
     with picked as (
-      select o.provider_batch_uuid
+      select o.batch_fk
         from batcher.fetch_outbox o
        where (o.fetch_claimed_until is null or o.fetch_claimed_until < now())
        order by o.created_at asc
-       limit $1 :: int4
+       limit $1::int4
        for update skip locked
     )
     update batcher.fetch_outbox o
-       set fetch_claimed_by    = $2 :: text,
-           fetch_claim_token   = $3 :: uuid,
-           fetch_claimed_until = now() + make_interval(secs => $4 :: int4)
+       set fetch_claimed_by    = $2::text,
+           fetch_claim_token   = $3::uuid,
+           fetch_claimed_until = now() + make_interval(secs => $4::int4)
       from picked p
-     where o.provider_batch_uuid = p.provider_batch_uuid
-     returning o.provider_batch_uuid :: uuid
+     where o.batch_fk = p.batch_fk
+     returning o.batch_fk::uuid
   |]
+
 
 claimFetchOutboxOneStmt :: Statement (UUID, Text, UUID, Int32) (Vector UUID)
 claimFetchOutboxOneStmt =
   [vectorStatement|
     update batcher.fetch_outbox
-       set fetch_claimed_by    = $2 :: text,
-           fetch_claim_token   = $3 :: uuid,
-           fetch_claimed_until = now() + make_interval(secs => $4 :: int4)
-     where provider_batch_uuid = $1 :: uuid
+       set fetch_claimed_by    = $2::text,
+           fetch_claim_token   = $3::uuid,
+           fetch_claimed_until = now() + make_interval(secs => $4::int4)
+     where batch_fk = $1::uuid
        and (fetch_claimed_until is null or fetch_claimed_until < now())
-     returning provider_batch_uuid :: uuid
+     returning batch_fk::uuid
   |]
+
+
+listBatchRequestsStmt :: Statement UUID (Vector UUID)
+listBatchRequestsStmt =
+  [vectorStatement|
+    select request_fk::uuid
+      from batcher.batch_requests
+     where batch_fk = $1::uuid
+  |]
+
 
 -- Attach raw_result_locator to requests in that batch (only those completed).
 -- We do "set if null" so repeat fetches are harmless.
@@ -227,10 +226,11 @@ insertS3ObjectStmt = [resultlessStatement|
 
 
 deleteFetchOutboxStmt :: Statement (UUID, UUID) ()
-deleteFetchOutboxStmt = [resultlessStatement|
+deleteFetchOutboxStmt =
+  [resultlessStatement|
     delete from batcher.fetch_outbox
-     where provider_batch_uuid = $1 :: uuid
-       and fetch_claim_token   = $2 :: uuid
+     where batch_fk = $1::uuid
+       and fetch_claim_token = $2::uuid
   |]
 
 
@@ -252,14 +252,136 @@ listRequestsForBatchStmt = [vectorStatement|
        and state = 'completed'
   |]
 
+
 claimPollBatchOneStmt :: Statement (UUID, Text, UUID, Int32) (Vector UUID)
-claimPollBatchOneStmt = [vectorStatement|
-    update batcher.requests
-       set poll_claimed_by    = $2 :: text,
-           poll_claim_token   = $3 :: uuid,
-           poll_claimed_until = now() + make_interval(secs => $4 :: int4)
-     where provider_batch_uuid = $1 :: uuid
+claimPollBatchOneStmt =
+  [vectorStatement|
+    update batcher.batches
+       set poll_claimed_by    = $2::text,
+           poll_claim_token   = $3::uuid,
+           poll_claimed_until = now() + make_interval(secs => $4::int4)
+     where uid = $1::uuid
        and (poll_claimed_until is null or poll_claimed_until < now())
-     returning request_id :: uuid
+     returning uid::uuid
   |]
 
+
+clearPollClaimBatchStmt :: Statement (UUID, UUID) ()
+clearPollClaimBatchStmt =
+  [resultlessStatement|
+    update batcher.batches
+       set poll_claimed_until = null,
+           poll_claimed_by    = null,
+           poll_claim_token   = null
+     where uid = $1::uuid
+       and poll_claim_token = $2::uuid
+  |]
+
+
+-- Batch Stmts:
+insertBatchStmt :: Statement (UUID, Text) ()
+insertBatchStmt =
+  [resultlessStatement|
+    insert into batcher.batches (uid, provider_batch_id)
+    values ($1::uuid, $2::text)
+    on conflict (uid) do nothing
+  |]
+
+insertBatchEventStmt :: Statement (UUID, Text, Value) ()
+insertBatchEventStmt =
+  [resultlessStatement|
+    insert into batcher.batch_events (batch_fk, event_type, details)
+    values ($1::uuid, $2::text, $3::jsonb)
+  |]
+
+insertBatchRequestStmt :: Statement (UUID, UUID, Maybe Text) ()
+insertBatchRequestStmt =
+  [resultlessStatement|
+    insert into batcher.batch_requests (request_fk, batch_fk, provider_request_id)
+    values ($1::uuid, $2::uuid, $3::text?)
+    on conflict (request_fk, batch_fk) do nothing
+  |]
+
+markRequestSubmittedStmt :: Statement (UUID, UUID) ()
+markRequestSubmittedStmt =
+  [resultlessStatement|
+    update batcher.requests set
+      state = 'submitted',
+      submit_claimed_until = null,
+      submit_claimed_by = null,
+      submit_claim_token = null,
+      updated_at = now()
+     where request_id = $1::uuid
+       and submit_claim_token = $2::uuid
+  |]
+
+claimPollBatchesStmt :: Statement (Int32, Text, UUID, Int32) (Vector UUID)
+claimPollBatchesStmt =
+  [vectorStatement|
+    with candidates as (
+      select b.uid
+        from batcher.batches b
+       where (b.poll_claimed_until is null or b.poll_claimed_until < now())
+         and exists (
+           select 1
+             from batcher.batch_requests br
+             join batcher.requests r on r.request_id = br.request_fk
+            where br.batch_fk = b.uid
+              and r.state = 'submitted'
+         )
+         and not exists (
+           select 1
+             from batcher.batch_events e
+            where e.batch_fk = b.uid
+              and e.event_type in ('completed','cancelled','failed')
+         )
+       order by b.created_at asc
+       limit $1::int4
+       for update skip locked
+    )
+    update batcher.batches b
+       set poll_claimed_by    = $2::text,
+           poll_claim_token   = $3::uuid,
+           poll_claimed_until = now() + make_interval(secs => $4::int4)
+      from candidates c
+     where b.uid = c.uid
+     returning b.uid::uuid
+  |]
+
+markBatchRequestsCancelledStmt :: Statement (UUID, UUID) (Vector UUID)
+markBatchRequestsCancelledStmt =
+  [vectorStatement|
+    update batcher.requests r
+       set state = 'cancelled',
+           updated_at = now()
+      from batcher.batch_requests br
+      join batcher.batches b on b.uid = br.batch_fk
+     where br.batch_fk = $1::uuid
+       and b.poll_claim_token = $2::uuid
+       and r.request_id = br.request_fk
+       and r.state = 'submitted'
+     returning r.request_id::uuid
+  |]
+
+
+upsertRequestResultStmt :: Statement (UUID, UUID, Value, Text) ()
+upsertRequestResultStmt =
+  [resultlessStatement|
+    insert into batcher.request_results (batch_fk, request_fk, metadata, content)
+    values ($1::uuid, $2::uuid, $3::jsonb, $4::text)
+    on conflict (batch_fk, request_fk)
+    do update set
+      metadata = excluded.metadata,
+      content  = excluded.content
+  |]
+
+
+markRequestCompletedStmt :: Statement UUID ()
+markRequestCompletedStmt =
+  [resultlessStatement|
+    update batcher.requests
+       set state = 'completed',
+           updated_at = now()
+     where request_id = $1::uuid
+       and state = 'submitted'
+  |]

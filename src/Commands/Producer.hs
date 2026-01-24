@@ -132,11 +132,8 @@ runEngines pgPool s3Conn apiKey targetProvider productionID = do
     eiRez <- Sp.submitBatchToService manager targetProvider apiKey requestPairs
     case eiRez of
       Left errMsg -> pure . Left $ Su.SubmitError ("P:" <> targetProvider) (T.pack errMsg)
-      Right (submitID, submitPairs) ->
-        let
-           subUid = fromMaybe Uu.nil $ Uu.fromText submitID
-        in
-        pure . Right $ Su.SubmitOk subUid submitPairs
+      Right (providerID, batchID) ->
+        pure . Right $ Su.SubmitOk providerID batchID
 
 
   pollStatusFromService :: Manager -> UUID -> IO (Either Po.PollError Po.ProviderBatchStatus)

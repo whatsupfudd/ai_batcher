@@ -41,16 +41,9 @@ import Data.Time.Clock ( getCurrentTime )
 import qualified Data.Time.Format as Dfm
 
 import GHC.Generics ( Generic )
-import Network.HTTP.Client ( Request(..)
-                                                , Response(..)
-                                                , Manager
-                                                , httpLbs
-                                                , method
-                                                , newManager
-                                                , parseRequest
-                                                , requestHeaders
-                                                , responseBody
-                                                )
+import Network.HTTP.Client ( Request(..), Response(..), Manager, httpLbs
+          , method, newManager, parseRequest, requestHeaders, responseBody
+  )
 import Network.HTTP.Client.TLS ( tlsManagerSettings )
 import Network.HTTP.Types (HeaderName)
 import System.Directory ( createDirectoryIfMissing, listDirectory )

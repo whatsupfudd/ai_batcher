@@ -22,7 +22,7 @@ getCredsForProvider provider = do
     _ -> pure . Left $ "Unsupported provider: " <> unpack provider
 
 
-submitBatchToService :: Manager -> Text -> Text -> NE.NonEmpty (UUID, Text) -> IO (Either String (Text, [(UUID, Text)]))
+submitBatchToService :: Manager -> Text -> Text -> NE.NonEmpty (UUID, Text) -> IO (Either String (Text, UUID))
 submitBatchToService manager provider apiKey requestPairs = do
   case provider of
     "openai" ->

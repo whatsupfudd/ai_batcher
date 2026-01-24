@@ -57,8 +57,8 @@ data SubmitConfig = SubmitConfig
   deriving (Show, Eq, Generic)
 
 data SubmitOk = SubmitOk { 
-    providerBatchUuidSO :: UUID
-  , providerRequestIDsSO :: [(UUID, Text)]
+    providerIDSO :: Text
+  , batchIDSO :: UUID
   }
   deriving (Show, Eq, Generic)
 
@@ -115,17 +115,17 @@ submitWorker ctxt cfg SubmitKick = drainOnce
   where
   drainOnce = do
     putStrLn "@[submitWorker] draining...."
-    token <- nextRandom
-    claimed <- claimEnteredRequests ctxt.pgPoolCT ctxt.nodeIdCT token cfg.batchSizeSC cfg.claimTtlSecondsSC
+    batchUuid <- nextRandom
+    claimed <- claimEnteredRequests ctxt.pgPoolCT ctxt.nodeIdCT batchUuid cfg.batchSizeSC cfg.claimTtlSecondsSC
     if V.null claimed then do
       putStrLn "@[submitWorker] no claims."
       pure ()
     else do
       putStrLn $ "@[submitWorker] claims: " <> L.intercalate "\n" (V.toList $ V.map show claimed)
-      processOne token claimed
+      processOne batchUuid claimed
       drainOnce
 
-  processOne token claimedVec = do
+  processOne batchUuid claimedVec = do
     putStrLn "@[submitWorker] processing..."
     let
       claimList = V.toList claimedVec
@@ -135,32 +135,34 @@ submitWorker ctxt cfg SubmitKick = drainOnce
     res <- ctxt.sendRequestCT reqPairs
     putStrLn $ "@[submitWorker] response: " <> show res
     case res of
-      Left err -> releaseClaimWithError ctxt.pgPoolCT token err claimList
+      Left err -> releaseClaimWithError ctxt.pgPoolCT batchUuid err claimList
       Right ok -> do
-        markSubmittedBatch ctxt.pgPoolCT token ok.providerBatchUuidSO ok.providerRequestIDsSO claimList
+        markSubmittedBatch ctxt.pgPoolCT ok.providerIDSO ok.batchIDSO claimList
         -- FAST PATH: tell Poll immediately
-        ctxt.enqueuePollCT ok.providerBatchUuidSO
+        ctxt.enqueuePollCT ok.batchIDSO
 
 
 claimEnteredRequests :: Pool.Pool -> Text -> UUID -> Int -> Int32 -> IO (Vector ClaimedRequest)
-claimEnteredRequests pool nodeId token limitN ttlSec = do
+claimEnteredRequests pool nodeId batchUuid limitN ttlSec = do
   ei <- Es.execStmt pool $
-          Tx.statement (fromIntegral limitN, nodeId, token, ttlSec) Es.claimRequestsStmt
+          Tx.statement (fromIntegral limitN, nodeId, batchUuid, ttlSec) Es.claimRequestsStmt
   case ei of
     Left err -> throwIO (DbError (T.pack (show err)))
     Right rows -> pure (V.map (uncurry ClaimedRequest) rows)
 
 
-markSubmittedBatch :: Pool.Pool -> UUID -> UUID -> [(UUID, Text)] -> [ClaimedRequest] -> IO ()
-markSubmittedBatch pool token providerBatchUuid providerReqIds reqs = do
+markSubmittedBatch :: Pool.Pool -> Text -> UUID -> [ClaimedRequest] -> IO ()
+markSubmittedBatch pool providerBatchID batchUuid requests = do
   let
-    lookupProv rid = lookup rid providerReqIds
+    lookupProv rid = case L.find (\cr -> cr.requestIDCR == rid) requests of
+      Just cr -> Just cr.requestTextCR
+      Nothing -> Nothing
   ei <- Es.execStmt pool $ do
-          V.forM_ (V.fromList reqs) (\cr -> do
-            Tx.statement (cr.requestIDCR, token, (T.pack . Uu.toString ) providerBatchUuid
+          V.forM_ (V.fromList requests) (\cr -> do
+            Tx.statement (cr.requestIDCR, batchUuid, providerBatchID
                   , lookupProv cr.requestIDCR) Es.markSubmittedStmt
             Tx.statement (cr.requestIDCR, "submitted" :: Text
-                  , submittedDetails providerBatchUuid (lookupProv cr.requestIDCR))
+                  , submittedDetails batchUuid (lookupProv cr.requestIDCR))
               Es.insertRequestEventStmt
             )
   case ei of

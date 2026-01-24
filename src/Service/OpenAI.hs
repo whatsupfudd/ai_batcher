@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE DeriveGeneric #-}
 module Service.OpenAI where
 
 import Data.Bits ( xor )
@@ -52,7 +53,7 @@ data BatchStatus = BatchStatus
   } deriving (Show)
 
 
-submitBatch :: ServiceConfig ->Manager -> String -> NE.NonEmpty (UUID, Text) -> IO (Either String (Text, [(UUID, Text)]))
+submitBatch :: ServiceConfig ->Manager -> String -> NE.NonEmpty (UUID, Text) -> IO (Either String (Text, UUID))
 submitBatch cfg manager apiKey requestPairs = do
   moment <- getCurrentTime
   batchID <- U4.nextRandom
@@ -65,11 +66,11 @@ submitBatch cfg manager apiKey requestPairs = do
     mergedRequests = LBS.fromStrict $ TE.encodeUtf8 $ T.intercalate "\n" requests
   uploadFileFromBS manager apiKey mergedRequests (Uu.toString batchID) "batch" >>= \case
     Left err -> pure . Left $ "Failed to upload batch: " <> err
-    Right fileID -> do
-      rezA <- createBatch manager apiKey fileID "/v1/responses" "24h"
+    Right fileResponse -> do
+      rezA <- createBatch manager apiKey batchID "/v1/responses" "24h"
       case rezA of
         Left err -> pure . Left $ "Failed to create batch: " <> err
-        Right submitID -> pure $ Right (submitID, [(batchID, fileID)])
+        Right sResponse -> pure $ Right (sResponse.idSR, batchID)
 
 
 calcKeyFromRequests :: NE.NonEmpty (UUID, Text) -> Text
@@ -114,7 +115,28 @@ oneLineJSONL i moment systemPrompt userPrompt cacheKey model effort =
   in TE.decodeUtf8 (LBS.toStrict (A.encode lineObj))
 
 
-uploadFileFromBS :: Manager -> String -> LBS.ByteString -> String -> Text -> IO (Either String Text)
+data FileUploadResponse = FileUploadResponse {
+  idFR :: Text
+  , objectFR :: Text
+  , bytesFR :: Int
+  , createdAtFR :: Int
+  , expiresAtFR :: Int
+  , filenameFR :: Text
+  , purposeFR :: Text
+} deriving (Show, Generic)
+
+instance A.FromJSON FileUploadResponse where
+  parseJSON = A.withObject "FileUploadResponse" $ \o ->
+    FileUploadResponse <$> o A..: "id"
+      <*> o A..: "object"
+      <*> o A..: "bytes"
+      <*> o A..: "created_at"
+      <*> o A..: "expires_at"
+      <*> o A..: "filename"
+      <*> o A..: "purpose"
+
+
+uploadFileFromBS :: Manager -> String -> LBS.ByteString -> String -> Text -> IO (Either String FileUploadResponse)
 uploadFileFromBS manager apiKey content batchID purpose = do
   baseReq <- parseRequest "https://api.openai.com/v1/files"
   let
@@ -127,47 +149,107 @@ uploadFileFromBS manager apiKey content batchID purpose = do
       , requestHeaders = authHeaders apiKey
       }
   req <- formDataBody parts fullRequest
-  putStrLn $ "Request: " <> show req
-  putStrLn $ "Parts: " <> show content
+  -- putStrLn $ "Request: " <> show req
+  -- putStrLn $ "Parts: " <> show content
   -- pure $ Left "@[uploadFileFromBS] stopped."
   resp <- httpLbs req manager
-  case A.eitherDecode (responseBody resp) of
-    Left e  -> pure . Left $ "Files API decode error: " <> e
-    Right v -> case v of
-      A.Object o -> case At.parseMaybe (A..: "id") o of
-        Just (A.String fid) -> pure $ Right fid
-        _ -> do
-          putStrLn "Response: " >> print v
-          pure . Left $ "@[uploadFile] no 'id' in response"
-      _ -> pure . Left $ "@[uploadFile] unexpected response"
+  pure $ A.eitherDecode resp.responseBody
 
+
+data BatchSubmitResponse = BatchSubmitResponse {
+  idSR :: Text
+  , statusSR :: Text
+  , errorsSR :: Maybe Text
+  , outputFileIdSR :: Maybe Text
+  , errorFileIdSR :: Maybe Text
+  , completedAtSR :: Maybe Int
+  , failedAtSR :: Maybe Int
+  , expiredAtSR :: Maybe Int
+  , cancellingAtSR :: Maybe Int
+  , cancelledAtSR :: Maybe Int
+  , requestCountsSR :: Maybe RequestCountsSR
+  , usageSR :: Maybe UsageSR
+} deriving (Show, Generic)
+
+instance A.FromJSON BatchSubmitResponse where
+  parseJSON = A.withObject "BatchSubmitResponse" $ \o ->
+    BatchSubmitResponse 
+      <$> o A..: "id"
+      <*> o A..: "status"
+      <*> o A..:? "errors"
+      <*> o A..:? "output_file_id"
+      <*> o A..:? "error_file_id"
+      <*> o A..:? "completed_at"
+      <*> o A..:? "failed_at"
+      <*> o A..:? "expired_at"
+      <*> o A..:? "cancelling_at"
+      <*> o A..:? "cancelled_at"
+      <*> o A..:? "request_counts"
+      <*> o A..:? "usage"
+
+
+data RequestCountsSR = RequestCountsSR {
+  totalRC :: Int
+  , completedRC :: Int
+  , failedRC :: Int
+} deriving (Show, Generic)
+
+instance A.FromJSON RequestCountsSR where
+  parseJSON = A.withObject "RequestCountsSR" $ \o ->
+    RequestCountsSR <$> o A..: "total" <*> o A..: "completed" <*> o A..: "failed"
+
+data UsageSR = UsageSR {
+  inputTokensSR :: Int
+  , inputTokensDetailsSR :: Maybe InputTokensDetailsSR
+  , outputTokensSR :: Int
+  , outputTokensDetailsSR :: Maybe OutputTokensDetailsSR
+  , totalTokensSR :: Int
+} deriving (Show, Generic)
+
+instance A.FromJSON UsageSR where
+  parseJSON = A.withObject "UsageSR" $ \o ->
+    UsageSR <$> o A..: "input_tokens"
+      <*> o A..:? "input_tokens_details"
+      <*> o A..: "output_tokens"
+      <*> o A..:? "output_tokens_details"
+      <*> o A..: "total_tokens"
+
+newtype InputTokensDetailsSR = InputTokensDetailsSR {
+  cachedTokensSR :: Int
+} deriving (Show, Generic)
+
+instance A.FromJSON InputTokensDetailsSR where
+  parseJSON = A.withObject "InputTokensDetailsSR" $ \o ->
+    InputTokensDetailsSR <$> o A..: "cached_tokens"
+
+newtype OutputTokensDetailsSR = OutputTokensDetailsSR {
+  reasoningTokensSR :: Int
+} deriving (Show, Generic)
+
+instance A.FromJSON OutputTokensDetailsSR where
+  parseJSON = A.withObject "OutputTokensDetailsSR" $ \o ->
+    OutputTokensDetailsSR <$> o A..: "reasoning_tokens"
+ 
 
 -- Create a batch from an uploaded JSONL file
-createBatch :: Manager -> String -> Text -> Text -> Text -> IO (Either String Text)
-createBatch manager apiKey inputFileId endpointPath completionWindow = do
+createBatch :: Manager -> String -> UUID -> Text -> Text -> IO (Either String BatchSubmitResponse)
+createBatch manager apiKey batchID endpointPath completionWindow = do
   baseReq <- parseRequest "https://api.openai.com/v1/batches"
-  let payload = A.object [
-           "input_file_id" .= inputFileId
+  let
+    payload = A.object [
+           "input_file_id" .= (Uu.toString batchID <> ".jsonl")
         , "endpoint" .= endpointPath
         , "completion_window" .= completionWindow
         ]
-      req = baseReq {
-          method = "POST"
-        , requestHeaders = ("Content-Type", "application/json") : authHeaders apiKey
-        , requestBody = RequestBodyLBS (A.encode payload)
-        }
-  putStrLn $ "Request: " <> show req
+    req = baseReq {
+        method = "POST"
+      , requestHeaders = ("Content-Type", "application/json") : authHeaders apiKey
+      , requestBody = RequestBodyLBS (A.encode payload)
+      }
+  -- putStrLn $ "Request: " <> show req
   -- pure $ Left "@[createBatch] stopped."
   resp <- httpLbs req manager
-  case A.eitherDecode (responseBody resp) of
-    Left e  -> pure . Left $ "@[createBatch] decode error: " <> e
-    Right v -> case v of
-      A.Object o -> case At.parseMaybe (A..: "id") o of
-        Just (A.String batchID) -> pure $ Right batchID
-        _ -> do
-          putStrLn "Response: " >> print v
-          pure . Left $ "@[createBatch] no 'id' in response"
-      _ -> pure . Left $ "@[createBatch] unexpected response"
+  pure $ A.eitherDecode resp.responseBody
 
 
 -- Common auth headers
