@@ -2,6 +2,7 @@ module Commands.Producer (produceCmd) where
 
 import Control.Exception (bracket)
 import Control.Monad.Cont (runContT, ContT (..))    -- 
+import Control.Concurrent (threadDelay)
 
 import qualified Data.ByteString.Lazy as Lbs
 import Data.Either (lefts, rights)
@@ -14,6 +15,7 @@ import qualified Data.Text.Encoding as TE
 import Data.UUID (UUID, toString)
 import Data.UUID.V4 (nextRandom)
 import qualified Data.UUID as Uu
+import Data.Vector (Vector)
 
 import qualified Data.Aeson as Ae
 
@@ -33,7 +35,7 @@ import qualified Engine.Submit as Su
 import qualified Engine.Poll as Po
 import qualified Engine.Fetch as Fe
 import qualified Service.Provider as Sp
-import Control.Concurrent (threadDelay)
+import qualified Service.Types as St
 
 
 produceCmd :: Cl.ProducerOpts -> Opt.RunOptions -> IO ()
@@ -87,7 +89,7 @@ runEngines pgPool s3Conn apiKey targetProvider productionID = do
         , maxBatchesPerTickFC = 10
         , queueDepthFC = 100
         , workerCountFC = 10
-        , claimTtlSecondsFC = 300
+        , claimTtlSecondsFC = 60
         , errorBackoffSecondsFC = 300
         }
   fetcher <- Fe.startFetchEngine fetchCtxt fetchCfg
@@ -100,11 +102,11 @@ runEngines pgPool s3Conn apiKey targetProvider productionID = do
         , enqueueFetchCT = fetcher.enqueueFH
         }
     pollCfg = Po.PollConfig {
-          pollIntervalMicrosPC = 1000000
+          pollIntervalMicrosPC = 1000000 * 10 -- 10 seconds
         , maxBatchesPerTickPC = 10
         , queueDepthPC = 100
         , workerCountPC = 10
-        , claimTtlSecondsPC = 300
+        , claimTtlSecondsPC = 60
         }
   poll <- Po.startPollEngine pollCtxt pollCfg
   putStrLn "@[runEngines] started poll."
@@ -120,12 +122,12 @@ runEngines pgPool s3Conn apiKey targetProvider productionID = do
         , batchSizeSC = 10
         , queueDepthSC = 100
         , workerCountSC = 10
-        , claimTtlSecondsSC = 300
+        , claimTtlSecondsSC = 60
         }
   submit <- Su.startSubmitEngine submitCtxt submitCfg
   putStrLn "@[runEngines] started submit."
   -- TODO: how long to run?
-  threadDelay $ 1000000 * 10
+  threadDelay $ 1000000 * 60 * 10 -- 10 minutes
   where  
   submitBatchToService :: Manager -> Text -> NonEmpty (UUID, Text) -> IO (Either Su.SubmitError Su.SubmitOk)
   submitBatchToService manager targetProvider requestPairs = do
@@ -136,17 +138,17 @@ runEngines pgPool s3Conn apiKey targetProvider productionID = do
         pure . Right $ Su.SubmitOk providerID batchID
 
 
-  pollStatusFromService :: Manager -> UUID -> IO (Either Po.PollError Po.ProviderBatchStatus)
-  pollStatusFromService manager batchID = do
-    rez <- Sp.pollStatusFromService manager targetProvider apiKey batchID
+  pollStatusFromService :: Manager -> (UUID, Text) -> IO (Either Po.PollError St.ProviderBatchStatus)
+  pollStatusFromService manager (batchUid, providerBatchId) = do
+    rez <- Sp.pollStatusFromService manager targetProvider apiKey (batchUid, providerBatchId)
     case rez of
       Left errMsg -> pure . Left $ Po.PollError ("P:" <> targetProvider) (T.pack errMsg)
       Right value -> pure $ Right value
 
 
-  fetchBatchFromService :: Manager -> UUID -> IO (Either Fe.FetchError Ae.Value)
-  fetchBatchFromService manager batchID = do
-    eiRez <- Sp.fetchBatchFromService manager targetProvider apiKey batchID
+  fetchBatchFromService :: Manager -> (UUID, Text) -> IO (Either Fe.FetchError (Lbs.ByteString, Vector (Either String St.RequestResult)))
+  fetchBatchFromService manager (batchUid, providerBatchId) = do
+    eiRez <- Sp.fetchBatchFromService manager targetProvider apiKey (batchUid, providerBatchId)
     case eiRez of
       Left errMsg -> pure . Left $ Fe.FetchError ("P:" <> targetProvider) (T.pack errMsg)
       Right value -> pure . Right $ value

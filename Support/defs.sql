@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS batcher.requests (
   item_index          integer NOT NULL,                    -- 1..N within a production
   item_meta           jsonb NOT NULL DEFAULT '{}'::jsonb,  -- parsed TOML header as JSON
   request_text        text NOT NULL,                       -- rendered template output
-  -- state               batcher.request_state NOT NULL DEFAULT 'entered',
+  state               batcher.request_state NOT NULL DEFAULT 'entered',
 
   -- Fields useful for later pipeline steps (optional but usually needed):
   provider_batch_id   text,
@@ -109,15 +109,6 @@ CREATE TABLE IF NOT EXISTS batcher.request_events (
 CREATE INDEX IF NOT EXISTS request_events_by_req_time ON batcher.request_events (request_id, occurred_at DESC);
 
 
-create table if not exists batcher.request_results (
-  request_fk uuid not null references batcher.requests(request_id) on delete cascade
-  , batch_fk uuid REFERENCES batcher.batches(uid) ON DELETE CASCADE
-  , created_at timestamptz NOT NULL DEFAULT now()
-  , metadata jsonb not null default '{}'::jsonb
-  , content text
-  , primary key (batch_fk, request_fk)
-);
-
 
 -- Track the batches of requests:
 create table if not exists batcher.batches (
@@ -145,11 +136,21 @@ CREATE INDEX IF NOT EXISTS batch_events_by_batch_time ON batcher.batch_events (b
 create table if not exists batcher.batch_requests (
   request_fk uuid not null references batcher.requests(request_id) on delete cascade
   , batch_fk uuid not null references batcher.batches(uid) on delete cascade
+  , provider_request_id text
   , created_at timestamptz not null default now()
   , primary key (request_fk, batch_fk)
 );
 
 CREATE INDEX IF NOT EXISTS batch_requests_by_batch ON batcher.batch_requests (batch_fk);
+
+create table if not exists batcher.request_results (
+  request_fk uuid not null references batcher.requests(request_id) on delete cascade
+  , batch_fk uuid REFERENCES batcher.batches(uid) ON DELETE CASCADE
+  , created_at timestamptz NOT NULL DEFAULT now()
+  , metadata jsonb not null default '{}'::jsonb
+  , content text
+  , primary key (batch_fk, request_fk)
+);
 
 
 -- Durable outbox for Engine.Fetch (one row per ready batch).

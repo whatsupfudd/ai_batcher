@@ -161,12 +161,13 @@ insertFetchOutboxStmt =
 
 
 -- Fetch Stmts:
-claimFetchOutboxManyStmt :: Statement (Int32, Text, UUID, Int32) (Vector UUID)
+claimFetchOutboxManyStmt :: Statement (Int32, Text, UUID, Int32) (Vector (UUID, Text))
 claimFetchOutboxManyStmt =
   [vectorStatement|
     with picked as (
-      select o.batch_fk
+      select o.batch_fk, b.provider_batch_id
         from batcher.fetch_outbox o
+        join batcher.batches b on b.uid = o.batch_fk
        where (o.fetch_claimed_until is null or o.fetch_claimed_until < now())
        order by o.created_at asc
        limit $1::int4
@@ -178,7 +179,7 @@ claimFetchOutboxManyStmt =
            fetch_claimed_until = now() + make_interval(secs => $4::int4)
       from picked p
      where o.batch_fk = p.batch_fk
-     returning o.batch_fk::uuid
+     returning o.batch_fk::uuid, p.provider_batch_id::text
   |]
 
 
@@ -315,11 +316,11 @@ markRequestSubmittedStmt =
        and submit_claim_token = $2::uuid
   |]
 
-claimPollBatchesStmt :: Statement (Int32, Text, UUID, Int32) (Vector UUID)
+claimPollBatchesStmt :: Statement (Int32, Text, UUID, Int32) (Vector (UUID, Text))
 claimPollBatchesStmt =
   [vectorStatement|
     with candidates as (
-      select b.uid
+      select b.uid, b.provider_batch_id
         from batcher.batches b
        where (b.poll_claimed_until is null or b.poll_claimed_until < now())
          and exists (
@@ -345,7 +346,7 @@ claimPollBatchesStmt =
            poll_claimed_until = now() + make_interval(secs => $4::int4)
       from candidates c
      where b.uid = c.uid
-     returning b.uid::uuid
+     returning b.uid::uuid, b.provider_batch_id::text
   |]
 
 markBatchRequestsCancelledStmt :: Statement (UUID, UUID) (Vector UUID)

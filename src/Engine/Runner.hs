@@ -31,19 +31,20 @@ startEngine spec = do
   a <- async (runEngineWithQueue spec q)
   pure EngineHandle
     { asyncEH = a
-    , enqueueEH = \msg -> atomically (writeTBQueue q msg)
+    , enqueueEH = atomically . writeTBQueue q
     }
 
 runEngineWithQueue :: EngineSpec msg -> TBQueue msg -> IO ()
 runEngineWithQueue spec q = do
-  let workerLoop i = forever $ do
+  let
+    workerLoop i = forever $ do
         msg <- atomically (readTBQueue q)
-        workerES spec i msg
+        spec.workerES i msg
 
-  feederAs <- mapM (\f -> async (f q)) (feedersES spec)
-  workerAs <- mapM (\i -> async (workerLoop i)) [1 .. workerCountES spec]
+  feederAs <- mapM (async . (\f -> f q)) spec.feedersES
+  workerAs <- mapM (async . workerLoop) [1 .. spec.workerCountES]
 
   mapM_ link feederAs
   mapM_ link workerAs
 
-  void $ waitAnyCancel (feederAs ++ workerAs)
+  void . waitAnyCancel $ feederAs <> workerAs
