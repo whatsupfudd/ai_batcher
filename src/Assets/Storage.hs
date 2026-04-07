@@ -119,3 +119,17 @@ getAsset pgPool s3Conn assetId = do
           pure . Left $ "@[getAsset] getStream err: " <> show err
         Right lbs ->
           pure $ Right (contentType, lbs)
+
+
+--- Templates:
+
+storeS3 :: S3Conn -> Lbs.ByteString -> IO Uu.UUID
+storeS3 s3Conn bytes = do
+  newUUID <- Uu.nextRandom
+  Ops.putFromText s3Conn (T.pack . Uu.toString $ newUUID) (Lbs.toStrict bytes) Nothing
+  pure newUUID
+
+
+fetchTemplateFromS3 :: S3Conn -> Text -> IO (Either String Lbs.ByteString)
+fetchTemplateFromS3 s3Conn locator = do
+  Ops.getStream s3Conn locator

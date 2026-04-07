@@ -1,9 +1,8 @@
-module Commands.Producer (produceCmd) where
+module Commands.Receiver (receiveCmd) where
 
-import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
 import Control.Monad.Cont (runContT, ContT (..))    -- 
-import Control.Monad (unless)
+import Control.Concurrent (threadDelay)
 
 import qualified Data.ByteString.Lazy as Lbs
 import Data.Either (lefts, rights)
@@ -40,10 +39,8 @@ import qualified Service.Provider as Sp
 import qualified Service.Types as St
 
 
-produceCmd :: Cl.ProducerOpts -> Opt.RunOptions -> IO ()
-produceCmd prodOpts rtOpts = do
-  putStrLn $ "Applying template: " <> T.unpack prodOpts.templateNameIG <> " to source: " <> prodOpts.sourceIG
-  putStrLn $ "Version: " <> show prodOpts.versionIG
+receiveCmd :: Cl.ReceiverOpts -> Opt.RunOptions -> IO ()
+receiveCmd recvOpts rtOpts = do
   case S3.makeS3Conn <$> rtOpts.s3store of
     Nothing -> putStrLn "No S3 connection found"
     Just s3Conn -> do
@@ -54,23 +51,17 @@ produceCmd prodOpts rtOpts = do
             , s3RepoCT = St.storeS3 s3Conn
             , s3FetchCT = St.fetchTemplateFromS3 s3Conn
             }
-          targetProvider = fromMaybe rtOpts.provider prodOpts.providerIG
         in do
-        eiApiKey <- Sp.getCredsForProvider targetProvider
+        eiApiKey <- Sp.getCredsForProvider recvOpts.providerRC
         case eiApiKey of
           Left errMsg -> putStrLn $ "@[produceCmd] getCredsForProvider err: " <> errMsg
           Right apiKey -> do
-            rezA <- Tp.ingestTemplate ctxt prodOpts
-            case rezA of
-              Left err -> putStrLn $ "@[produceCmd] ingestTemplate err: " <> show err
-              Right productionInfo -> unless (fromMaybe False prodOpts.dryRunIG) $ do
-                  putStrLn $ "@[produceCmd] productionID: " <> show productionInfo
-                  runEngines pgPool s3Conn apiKey targetProvider productionInfo prodOpts.modelIG
+            runEngines pgPool s3Conn apiKey recvOpts.providerRC
       pure ()
 
 
-runEngines :: Pool.Pool -> At.S3Conn -> T.Text -> T.Text -> (UUID, Text) -> Maybe Text -> IO ()
-runEngines pgPool s3Conn apiKey targetProvider productionInfo mbModel = do
+runEngines :: Pool.Pool -> At.S3Conn -> T.Text -> T.Text -> IO ()
+runEngines pgPool s3Conn apiKey targetProvider = do
   manager <- Hc.newManager tlsManagerSettings
   let
     fetchCtxt = Fe.Context {
@@ -106,36 +97,9 @@ runEngines pgPool s3Conn apiKey targetProvider productionInfo mbModel = do
         }
   poll <- Po.startPollEngine pollCtxt pollCfg
   putStrLn "@[runEngines] started poll."
-  let
-    submitCtxt = Su.Context {
-          pgPoolCT = pgPool
-        , nodeIdCT = "producer"
-        , sendRequestCT = submitBatchToService manager targetProvider
-        , enqueuePollCT = poll.enqueuePH
-        }
-    submitCfg = Su.SubmitConfig {
-          pollIntervalMicrosSC = 1000000
-        , batchSizeSC = 10
-        , queueDepthSC = 100
-        , workerCountSC = 10
-        , claimTtlSecondsSC = 60
-        }
-  submit <- Su.startSubmitEngine submitCtxt submitCfg
-  putStrLn "@[runEngines] started submit."
   -- TODO: how long to run?
   threadDelay $ 1000000 * 60 * 10 -- 10 minutes
-  where  
-  submitBatchToService :: Manager -> Text -> NonEmpty (UUID, Text) -> IO (Either Su.SubmitError Su.SubmitOk)
-  submitBatchToService manager targetProvider requestPairs = do
-    eiRez <- Sp.submitBatchToService manager targetProvider apiKey requestPairs (snd productionInfo) mbModel
-    case eiRez of
-      Left errMsg -> do
-        putStrLn $ "@[submitBatchToService] error: " <> errMsg
-        pure . Left $ Su.SubmitError ("P:" <> targetProvider) (T.pack errMsg)
-      Right (providerID, batchID) ->
-        pure . Right $ Su.SubmitOk providerID batchID
-
-
+  where
   pollStatusFromService :: Manager -> (UUID, Text) -> IO (Either Po.PollError St.ProviderBatchStatus)
   pollStatusFromService manager (batchUid, providerBatchId) = do
     rez <- Sp.pollStatusFromService manager targetProvider apiKey (batchUid, providerBatchId)

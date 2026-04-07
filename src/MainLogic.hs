@@ -37,6 +37,9 @@ runWithOptions cliOptions fileOptions = do
             Opt.GenDocsCmd inHtml outPrefix -> Cmd.doGenDocs inHtml outPrefix
             Opt.ServerCmd -> Cmd.serverCmd
             Opt.ProducerCmd prodOpts -> Cmd.produceCmd prodOpts
+            Opt.ReceiverCmd recvOpts -> Cmd.receiveCmd recvOpts
+            Opt.ProcessCmd processOpts -> Cmd.processCmd processOpts
+            Opt.TemplateCmd templateSubCmds -> Cmd.templateCmd templateSubCmds
       rtOptions <- Opt.mergeOptions cliOptions fileOptions envOptions
       result <- cmdExecutor rtOptions
       -- TODO: return a properly kind of conclusion.

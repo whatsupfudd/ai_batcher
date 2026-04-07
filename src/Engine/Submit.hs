@@ -161,7 +161,7 @@ claimEnteredRequests
   -> IO (Vector ClaimedRequest)
 claimEnteredRequests pool nodeId submitClaimToken limitN ttlSec = do
   ei <-
-    Es.execStmt pool $
+    Es.execStmt "claimEnteredRequests" pool $
       Tx.statement
         (fromIntegral limitN, nodeId, submitClaimToken, ttlSec)
         Es.claimRequestsStmt
@@ -186,7 +186,7 @@ persistSubmittedBatch pool submitClaimToken batchUid providerBatchId reqs = do
   let
     detailsBatch = batchSubmittedDetails batchUid providerBatchId (length reqs)
 
-  eiRez <- Es.execStmt pool $ do
+  eiRez <- Es.execStmt "persistSubmittedBatch" pool $ do
     Tx.statement (batchUid, providerBatchId) Es.insertBatchStmt
     Tx.statement (batchUid, "submitted" :: Text, detailsBatch) Es.insertBatchEventStmt
 
@@ -217,7 +217,7 @@ releaseClaimWithError
 releaseClaimWithError pool submitClaimToken submitErr reqs = do
   let details = submitFailedDetails submitErr.codeSE submitErr.messageSE
 
-  ei <- Es.execStmt pool $ do
+  ei <- Es.execStmt "releaseClaimWithError" pool $ do
     V.forM_ (V.fromList reqs) $ \cr -> do
       Tx.statement (requestIdCR cr, submitClaimToken) Es.releaseClaimStmt
       Tx.statement (requestIdCR cr, "entered" :: Text, details) Es.insertRequestEventStmt

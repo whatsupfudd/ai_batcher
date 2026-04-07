@@ -37,6 +37,7 @@ import GHC.Generics (Generic)
 
 import qualified Hasql.Pool as Pool
 import qualified Hasql.Transaction as Tx
+import qualified Hasql.Session as Hs
 
 import qualified DB.EngineStmt as Es
 import qualified Engine.Runner as R
@@ -122,7 +123,7 @@ outboxClaimerFeeder ctxt cfg q = forever $ do
 claimFetchOutboxMany :: Pool.Pool -> Text -> UUID -> Int -> Int32 -> IO (Vector (UUID, Text))
 claimFetchOutboxMany pool nodeId token limitN ttlSec = do
   -- putStrLn $ "@[claimFetchOutboxOne] token: " <> show token
-  eiRez <- Es.execStmt pool $
+  eiRez <- Es.execStmt "claimFetchOutboxMany" pool $
           Tx.statement (fromIntegral limitN, nodeId, token, ttlSec) Es.claimFetchOutboxManyStmt
   case eiRez of
     Left err -> do
@@ -134,7 +135,7 @@ claimFetchOutboxMany pool nodeId token limitN ttlSec = do
 claimFetchOutboxOne :: Pool.Pool -> Text -> UUID -> UUID -> Int32 -> IO Bool
 claimFetchOutboxOne pool nodeId token batchUid ttlSec = do
   -- putStrLn $ "@[claimFetchOutboxOne] batchUid: " <> show batchUid
-  ei <- Es.execStmt pool $
+  ei <- Es.execStmt "claimFetchOutboxOne" pool $
           Tx.statement (batchUid, nodeId, token, ttlSec) Es.claimFetchOutboxOneStmt
   case ei of
     Left err -> do
@@ -200,10 +201,12 @@ fetchWorker ctxt cfg job = do
 
 persistRawS3AndEvent :: Pool.Pool -> UUID -> UUID -> Int64 -> IO ()
 persistRawS3AndEvent pool batchUid rawLoc bytesSz = do
+  -- putStrLn $ "@[persistRawS3AndEvent] batchUid: " <> show batchUid <> ", rawLoc: " <> show rawLoc <> ", bytesSz: " <> show bytesSz
   let details = rawFetchedDetails batchUid rawLoc bytesSz
-  ei <- Es.execStmt pool $ do
+  ei <- Es.execStmt "persistRawS3AndEvent" pool $ do
           Tx.statement (rawLoc, "raw_result" :: Text, bytesSz, "application/json" :: Text) Es.insertS3ObjectStmt
           Tx.statement (batchUid, "raw_fetched" :: Text, details) Es.insertBatchEventStmt
+  -- putStrLn $ "@[persistRawS3AndEvent] ei: " <> show ei
   case ei of
     Left err -> do
       putStrLn $ "@[persistRawS3AndEvent] error: " <> show err
@@ -212,8 +215,10 @@ persistRawS3AndEvent pool batchUid rawLoc bytesSz = do
 
 listBatchRequests :: Pool.Pool -> UUID -> IO (Vector UUID)
 listBatchRequests pool batchUid = do
-  ei <- Es.execStmt pool $
+  -- putStrLn $ "@[listBatchRequests] batchUid: " <> show batchUid
+  ei <- Es.execStmt "listBatchRequests" pool $
           Tx.statement batchUid Es.listBatchRequestsStmt
+  -- putStrLn $ "@[listBatchRequests] ei: " <> show ei
   case ei of
     Left err -> do
       putStrLn $ "@[listBatchRequests] error: " <> show err
@@ -225,7 +230,8 @@ persistAnswers pool batchUid answers = do
   -- okCount = inserted/updated answers, missCount = 0 here (miss computed earlier)
   let okCount = length answers
       missCount = 0
-  ei <- Es.execStmt pool $ do
+  -- putStrLn $ "@[persistAnswers] batchUid: " <> show batchUid <> ", answers: " <> show (length answers)
+  ei <- Es.execStmt "persistAnswers" pool $ do
           V.forM_ (V.fromList answers) $ \rResult ->
             let
               requestId = rResult.requestId
@@ -235,6 +241,7 @@ persistAnswers pool batchUid answers = do
             Tx.statement (batchUid, requestId, metaData, content) Es.upsertRequestResultStmt
             Tx.statement (requestId, "completed" :: Text, requestCompletedDetails batchUid metaData) Es.insertRequestEventStmt
             Tx.statement requestId Es.markRequestCompletedStmt
+  -- putStrLn $ "@[persistAnswers] ei: " <> show ei
   case ei of
     Left err -> do
       putStrLn $ "@[persistAnswers] error: " <> show err
@@ -243,7 +250,8 @@ persistAnswers pool batchUid answers = do
 
 insertBatchEvent :: Pool.Pool -> UUID -> Text -> Value -> IO ()
 insertBatchEvent pool batchUid eventType details = do
-  ei <- Es.execStmt pool $
+  -- putStrLn $ "@[insertBatchEvent] batchUid: " <> show batchUid <> ", eventType: " <> show eventType
+  ei <- Es.execStmt "insertBatchEvent" pool $
           Tx.statement (batchUid, eventType, details) Es.insertBatchEventStmt
   case ei of
     Left err -> do
@@ -253,7 +261,8 @@ insertBatchEvent pool batchUid eventType details = do
 
 deleteFetchOutbox :: Pool.Pool -> UUID -> UUID -> IO ()
 deleteFetchOutbox pool batchUid token = do
-  ei <- Es.execStmt pool $
+  -- putStrLn $ "@[deleteFetchOutbox] batchUid: " <> show batchUid <> ", token: " <> show token
+  ei <- Es.execStmt "deleteFetchOutbox" pool $
           Tx.statement (batchUid, token) Es.deleteFetchOutboxStmt
   case ei of
     Left err -> do
@@ -263,7 +272,8 @@ deleteFetchOutbox pool batchUid token = do
 
 releaseFetchOutboxClaim :: Pool.Pool -> UUID -> UUID -> Int32 -> IO ()
 releaseFetchOutboxClaim pool batchUid token backoffSec = do
-  ei <- Es.execStmt pool $
+  -- putStrLn $ "@[releaseFetchOutboxClaim] batchUid: " <> show batchUid <> ", token: " <> show token <> ", backoffSec: " <> show backoffSec
+  ei <- Es.execStmt "releaseFetchOutboxClaim" pool $
           Tx.statement (batchUid, token, backoffSec) Es.releaseFetchOutboxClaimStmt
   case ei of
     Left err -> do
@@ -305,7 +315,7 @@ extractAnswers v allowed =
       pure $ catMaybes ms
 
     parseUuidText :: Text -> Maybe UUID
-    parseUuidText t = Uu.fromText t
+    parseUuidText = Uu.fromText
 
     parseResultObj :: Value -> AT.Parser (Maybe (UUID, Value, Text))
     parseResultObj =

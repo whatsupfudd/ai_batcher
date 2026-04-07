@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Engine.Poll
   ( Context(..)
@@ -13,7 +14,7 @@ module Engine.Poll
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async)
 import Control.Concurrent.STM
-import Control.Exception (Exception, throwIO)
+import Control.Exception (Exception, throwIO, try, catch, SomeException)
 import Control.Monad (forever, unless, void, when)
 
 import Data.Aeson (Value)
@@ -109,7 +110,8 @@ claimerFeeder ctxt cfg q = forever $ do
 
 claimPollBatches :: Pool.Pool -> Text -> UUID -> Int -> Int32 -> IO (Vector (UUID, Text))
 claimPollBatches pool nodeId token limitN ttlSec = do
-  eiRez <- Es.execStmt pool $
+  -- putStrLn $ "@[claimPollBatches] nodeId: " <> show nodeId <> ", token: " <> show token <> ", limitN: " <> show limitN <> ", ttlSec: " <> show ttlSec
+  eiRez <- Es.execStmt "claimPollBatches" pool $
       Tx.statement (fromIntegral limitN, nodeId, token, ttlSec) Es.claimPollBatchesStmt
   case eiRez of
     Left err -> 
@@ -122,8 +124,8 @@ claimPollBatches pool nodeId token limitN ttlSec = do
 -- Fast-path claim-one for a specific batch (when enqueued by Engine.Submit)
 claimPollBatchOne :: Pool.Pool -> Text -> UUID -> UUID -> Int32 -> IO Bool
 claimPollBatchOne pool nodeId token batchUid ttlSec = do
-  putStrLn $ "@[claimPollBatchOne] batchUid: " <> show batchUid
-  ei <- Es.execStmt pool $
+  -- putStrLn $ "@[claimPollBatchOne] batchUid: " <> show batchUid <> ", token: " <> show token <> ", ttlSec: " <> show ttlSec
+  ei <- Es.execStmt "claimPollBatchOne" pool $
       Tx.statement (batchUid, nodeId, token, ttlSec) Es.claimPollBatchOneStmt
   case ei of
     Left err -> do
@@ -136,7 +138,7 @@ claimPollBatchOne pool nodeId token batchUid ttlSec = do
 
 pollWorker :: Context -> PollConfig -> PollJob -> IO ()
 pollWorker ctxt cfg job = do
-  putStrLn $ "@[pollWorker] job: " <> show job
+  -- putStrLn $ "@[pollWorker] job: " <> show job
   (token, claimed) <- case job.claimTokenPJ of
     Just t  -> pure (t, True)
     Nothing -> do
@@ -144,7 +146,7 @@ pollWorker ctxt cfg job = do
       ok <- claimPollBatchOne ctxt.pgPoolCT ctxt.nodeIdCT t job.batchUidPJ cfg.claimTtlSecondsPC
       pure (t, ok)
 
-  putStrLn $ "@[pollWorker] claimed: " <> show claimed <> " token: " <> show token
+  -- putStrLn $ "@[pollWorker] claimed: " <> show claimed <> " token: " <> show token
 
   unless claimed (pure ())
 
@@ -202,17 +204,32 @@ pollWorker ctxt cfg job = do
 
 insertBatchEvent :: Pool.Pool -> UUID -> Text -> Value -> IO ()
 insertBatchEvent pool batchUid eventType details = do
-  ei <- Es.execStmt pool $
-          Tx.statement (batchUid, eventType, details) Es.insertBatchEventStmt
-  case ei of
-    Left err -> do
-      putStrLn $ "@[insertBatchEvent] error: " <> show err
-      throwIO (DbError (T.pack (show err)))
-    Right _  -> pure ()
+  -- putStrLn $ "@[insertBatchEvent] batchUid: " <> show batchUid <> ", eventType: " <> show eventType
+  catch (
+      do
+      ei <- Es.execStmt "insertBatchEvent" pool $
+              Tx.statement (batchUid, eventType, details) Es.insertBatchEventStmt
+      -- putStrLn $ "@[insertBatchEvent] done: " <> show batchUid
+      case ei of
+        Left err -> do
+          putStrLn $ "@[insertBatchEvent] error: " <> show err
+          throwIO (DbError (T.pack (show err)))
+        Right _  -> do
+          -- putStrLn $ "@[insertBatchEvent] ok: " <> show batchUid
+          pure ()
+    )
+    (\(exc :: SomeException) -> 
+      do
+        putStrLn $ "@[insertBatchEvent] exception: " <> show exc
+        throwIO (DbError (T.pack (show exc)))
+    )
+  
+     
 
 insertFetchOutbox :: Pool.Pool -> UUID -> IO ()
 insertFetchOutbox pool batchUid = do
-  ei <- Es.execStmt pool $
+  -- putStrLn $ "@[insertFetchOutbox] batchUid: " <> show batchUid
+  ei <- Es.execStmt "insertFetchOutbox" pool $
           Tx.statement batchUid Es.insertFetchOutboxStmt
   case ei of
     Left err -> do
@@ -222,7 +239,8 @@ insertFetchOutbox pool batchUid = do
 
 markBatchRequestsCancelled :: Pool.Pool -> UUID -> UUID -> IO (Vector UUID)
 markBatchRequestsCancelled pool batchUid pollToken = do
-  ei <- Es.execStmt pool $
+  -- putStrLn $ "@[markBatchRequestsCancelled] batchUid: " <> show batchUid <> ", pollToken: " <> show pollToken
+  ei <- Es.execStmt "markBatchRequestsCancelled" pool $
           Tx.statement (batchUid, pollToken) Es.markBatchRequestsCancelledStmt
   case ei of
     Left err -> do
@@ -233,8 +251,10 @@ markBatchRequestsCancelled pool batchUid pollToken = do
 -- Append request_events for cancelled/failed (append-only history).
 insertCancelledRequestEvents :: Pool.Pool -> UUID -> Text -> Text -> Vector UUID -> IO ()
 insertCancelledRequestEvents pool batchUid kind reason reqIds = do
-  let details = requestTerminalDetails batchUid kind reason
-  ei <- Es.execStmt pool $ do
+  -- putStrLn $ "@[insertCancelledRequestEvents] batchUid: " <> show batchUid <> ", kind: " <> show kind <> ", reason: " <> show reason <> ", reqIds: " <> show (V.length reqIds)
+  let
+    details = requestTerminalDetails batchUid kind reason
+  ei <- Es.execStmt "insertCancelledRequestEvents" pool $ do
           V.forM_ reqIds (\rid ->
             Tx.statement (rid, "cancelled" :: Text, details) Es.insertRequestEventStmt
             )
@@ -247,8 +267,8 @@ insertCancelledRequestEvents pool batchUid kind reason reqIds = do
 
 clearPollClaim :: Pool.Pool -> UUID -> UUID -> IO ()
 clearPollClaim pool batchUid token = do
-  putStrLn $ "@[clearPollClaim] batchUid: " <> show batchUid <> ", token: " <> show token
-  ei <- Es.execStmt pool $
+  -- putStrLn $ "@[clearPollClaim] batchUid: " <> show batchUid <> ", token: " <> show token
+  ei <- Es.execStmt "clearPollClaim" pool $
           Tx.statement (batchUid, token) Es.clearPollClaimBatchStmt
   case ei of
     Left err -> do
@@ -271,10 +291,14 @@ polledDetails st =
 providerStatusText :: ProviderBatchStatus -> Text
 providerStatusText st =
   case st of
-    BatchRunning        -> "running"
-    BatchCompleted      -> "completed"
-    BatchCancelled _    -> "cancelled"
-    BatchFailed _       -> "failed"
+    BatchRunning ->  "running"
+    BatchCompleted ->  "completed"
+    BatchCancelled _ ->  "cancelled"
+    BatchFailed _ ->  "failed"
+    BatchFinalizing ->  "finalizing"
+    BatchInProgress ->  "in progress"
+    BatchValidating ->  "validating"
+    _ ->  "unknown"
 
 providerReason :: ProviderBatchStatus -> Value
 providerReason st =

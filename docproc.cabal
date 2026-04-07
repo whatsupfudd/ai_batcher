@@ -46,12 +46,16 @@ library
       Commands.Help
       Commands.Load
       Commands.PostP
+      Commands.Process
       Commands.Producer
+      Commands.Receiver
       Commands.Server
+      Commands.Template
       Commands.Version
       DB.Connect
       DB.EngineStmt
       DB.Opers
+      DB.PostProcStmt
       DB.TemplateStmt
       Engine.Fetch
       Engine.Poll
@@ -65,9 +69,12 @@ library
       Options.Cli
       Options.ConfFile
       Options.Runtime
+      PostProc.Access
+      PostProc.Convert
       Service.OpenAI
       Service.Provider
       Service.Types
+      Utils
   other-modules:
       Paths_docproc
   hs-source-dirs:
@@ -110,6 +117,7 @@ library
     , http-types
     , jose
     , lens
+    , megaparsec
     , minio-hs
     , mtl
     , network-transport-tcp
@@ -187,6 +195,7 @@ executable docproc
     , http-types
     , jose
     , lens
+    , megaparsec
     , minio-hs
     , mtl
     , network-transport-tcp
@@ -265,6 +274,7 @@ test-suite docproc-test
     , http-types
     , jose
     , lens
+    , megaparsec
     , minio-hs
     , mtl
     , network-transport-tcp

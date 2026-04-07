@@ -24,17 +24,41 @@ getCredsForProvider provider = do
     _ -> pure . Left $ "Unsupported provider: " <> unpack provider
 
 
-submitBatchToService :: Manager -> Text -> Text -> NE.NonEmpty (UUID, Text) -> IO (Either String (Text, UUID))
-submitBatchToService manager provider apiKey requestPairs = do
+submitBatchToService :: Manager -> Text -> Text -> NE.NonEmpty (UUID, Text) -> Text -> Maybe Text -> IO (Either String (Text, UUID))
+submitBatchToService manager provider apiKey requestPairs cacheKey mbModel =
+  let
+    nanoOaiCfg = St.ServiceConfig {
+        modelSC = "gpt-5.4-nano"
+      , effortSC = Nothing
+      , systemPromptSC = Nothing
+      }
+    miniOaiCfg = St.ServiceConfig {
+        modelSC = "gpt-5.4-mini"
+      , effortSC = Nothing
+      , systemPromptSC = Nothing
+      }
+    advOaiCfg = St.ServiceConfig {
+        modelSC = "gpt-5.4"
+      , effortSC = Just "high"
+      , systemPromptSC = Nothing
+      }
+  in
   case provider of
     "openai" ->
-      let oaiCfg = St.ServiceConfig {
-            modelSC = "gpt-4.1-nano"   -- "gpt-5.2"
-          , effortSC = Nothing -- Just "minimal"      -- "high"
-          , systemPromptSC = Nothing
-          }
+      let
+        eiOaiCfg = case mbModel of
+          Nothing -> Right nanoOaiCfg
+          Just model -> case model of
+            "gpt5.4-nano" -> Right nanoOaiCfg
+            "gpt5.4-mini" -> Right miniOaiCfg
+            "gpt5.4-high" -> Right advOaiCfg
+            _ -> Left $ "Unsupported model: " <> unpack model
       in
-      Oai.submitBatch oaiCfg manager (unpack apiKey) requestPairs
+      case eiOaiCfg of
+        Left errMsg -> pure . Left $ errMsg
+        Right oaiCfg -> do
+          putStrLn $ "@[submitBatchToService] using model: " <> unpack oaiCfg.modelSC
+          Oai.submitBatch oaiCfg manager (unpack apiKey) requestPairs cacheKey
     _ -> pure . Left $ "Unsupported provider: " <> unpack provider
 
 

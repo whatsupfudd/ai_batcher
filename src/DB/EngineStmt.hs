@@ -10,14 +10,29 @@ import Data.Vector (Vector)
 import Data.Aeson (Value)
 
 import Hasql.Statement (Statement)
+import qualified Hasql.Session as Hs
 import Hasql.TH
 import Hasql.Pool (Pool, UsageError, use)
 import qualified Hasql.Transaction as Tx
 import qualified Hasql.Transaction.Sessions as TxS
 
-execStmt :: Pool -> Tx.Transaction a -> IO (Either UsageError a)
-execStmt pool tx = use pool $ TxS.transaction TxS.ReadCommitted TxS.Write tx
+execStmt :: String -> Pool -> Tx.Transaction a -> IO (Either UsageError a)
+execStmt name pool tx = do
+  -- putStrLn $ "@[execStmt] " <> name <> " >>>>>>---->>>>>"
+  rez <- use pool $ TxS.transaction TxS.ReadCommitted TxS.Write tx
+  case rez of
+    Left err -> do
+      putStrLn $ "@[execStmt] " <> name <> " err: " <> show err
+    Right a -> pure ()
+  -- putStrLn $ "@[execStmt] " <> name <> " <<<<<<----<<<<<<"
+  pure rez
 
+execStmtUnsafe :: String -> Pool -> Hs.Session a -> IO (Either UsageError a)
+execStmtUnsafe name pool stmt = do
+  putStrLn $ "@[execStmtUnsafe] " <> name <> " >>>>>>---->>>>>"
+  rez <- use pool stmt
+  putStrLn $ "@[execStmtUnsafe] " <> name <> " <<<<<<----<<<<<<"
+  pure rez
 
 -- Submit Stmts:
 -- Only updates if claim token matches (prevents stale worker updates).

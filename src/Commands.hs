@@ -8,6 +8,9 @@ module Commands  (
   , module Commands.GenDocs
   , module Commands.Server
   , module Commands.Producer
+  , module Commands.Receiver
+  , module Commands.Process
+  , module Commands.Template
  )
 where
 
@@ -20,5 +23,7 @@ import Commands.PostP
 import Commands.GenDocs
 import Commands.Server
 import Commands.Producer
--- HERE: import 
+import Commands.Receiver
+import Commands.Process
+import Commands.Template
 

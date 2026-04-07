@@ -191,3 +191,12 @@ listFilesWith s3Conf paths = do
   case errors of
     "" -> pure $ Right allFound
     aVal -> pure $ Left aVal
+
+
+deleteFile :: S3Conn -> Text -> IO (Either String ())
+deleteFile s3Conf locator = do
+  res <- Mn.runMinio s3Conf.connInfoCn $ do
+    Mn.removeObject s3Conf.bucketCn locator
+  case res of
+    Left e -> pure . Left $ "@[deleteFile] file deletion failed due to " <> show e
+    Right () -> pure $ Right ()
