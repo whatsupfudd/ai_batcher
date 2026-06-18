@@ -74,6 +74,11 @@ postProcessResults pgPool procOpts = do
             putStrLn $ "@[postProcessResults] docx file: " <> show idx
             Pc.convToDocx (fromMaybe "/tmp" procOpts.outputDirPC) docName content
           pure $ Right ()
+        "htmljs" -> do
+          forM_ results $ \(idx, createdAt, content) -> do
+            putStrLn $ "@[postProcessResults] htmljs on: " <> show idx
+            Pc.convToHtmlJS (fromMaybe "/tmp" procOpts.outputDirPC) content
+          pure $ Right ()
         "code" -> do
           forM_ results $ \(idx, createdAt, content) -> do
             putStrLn $ "@[postProcessResults] code on: " <> show idx

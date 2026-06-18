@@ -321,20 +321,41 @@ fetchBatchResult :: Manager -> String -> (UUID, String) -> IO (Either String (LB
 fetchBatchResult manager apiKey (bid, providerBatchId) = do
   innerGetBatchStatus manager apiKey (bid, providerBatchId) >>= \case
     Left (errMsg, respBody) -> pure . Left $ "@[fetchBatchResult] innerGetBatchStatus err: " <> errMsg <> ", response: " <> show respBody
-    Right bStatus -> case bStatus.outputFileIdBS of
-      Nothing -> pure . Left $ "@[fetchBatchResult] missing output_file_id for batch: " <> providerBatchId
-      Just ofid -> do
-        jsonl <- getFileContent manager apiKey (T.unpack ofid)
-        let
-          linesBS = filter (not . LBS.null) (LBS.split 0x0A jsonl) -- split on '\n'
-          (downloaded, skipped) = foldr (\line (rezAccum, errAccum) ->
-                  case A.eitherDecode' line :: Either String A.Value of    -- First, use the direct extraction; then move to Result decoding.
-                    Left erMsg -> (rezAccum, erMsg : errAccum)
-                    Right aVal -> case extractMainText aVal of
-                      Left errMsg -> (rezAccum, errMsg : errAccum)
-                      Right content -> (content : rezAccum, errAccum)
-                ) ([], []) linesBS
-        pure $ Right (jsonl, V.fromList downloaded)
+    Right bStatus -> case bStatus.statusBS of
+      "completed" -> do
+        case bStatus.outputFileIdBS of
+          Nothing -> case bStatus.errorFileIdBS of
+            Nothing -> pure . Left $ "@[fetchBatchResult] missing output_file_id and error_file_id for batch: " <> providerBatchId
+            Just efid -> do
+              jsonl <- getFileContent manager apiKey (T.unpack efid)
+              let
+                linesBS = filter (not . LBS.null) (LBS.split 0x0A jsonl) -- split on '\n'
+                (downloaded, skipped) = foldr (\line (rezAccum, errAccum) ->
+                        case A.eitherDecode' line :: Either String A.Value of    -- First, use the direct extraction; then move to Result decoding.
+                          Left erMsg -> (rezAccum, erMsg : errAccum)
+                          Right aVal -> case extractMainText aVal of
+                            Left errMsg -> (rezAccum, errMsg : errAccum)
+                            Right content -> (content : rezAccum, errAccum)
+                        ) ([], []) linesBS
+              pure $ Right (jsonl, V.fromList downloaded)
+          Just ofid -> do
+            jsonl <- getFileContent manager apiKey (T.unpack ofid)
+            let
+              linesBS = filter (not . LBS.null) (LBS.split 0x0A jsonl) -- split on '\n'
+              (downloaded, skipped) = foldr (\line (rezAccum, errAccum) ->
+                      case A.eitherDecode' line :: Either String A.Value of    -- First, use the direct extraction; then move to Result decoding.
+                        Left erMsg -> (rezAccum, erMsg : errAccum)
+                        Right aVal -> case extractMainText aVal of
+                          Left errMsg -> (rezAccum, errMsg : errAccum)
+                          Right content -> (content : rezAccum, errAccum)
+                    ) ([], []) linesBS
+            pure $ Right (jsonl, V.fromList downloaded)
+      "failed" -> pure . Left $ "@[fetchBatchResult] batch failed: " <> providerBatchId
+      "cancelled" -> pure . Left $ "@[fetchBatchResult] batch cancelled: " <> providerBatchId
+      "in_progress" -> pure . Left $ "@[fetchBatchResult] batch in progress: " <> providerBatchId
+      "finalizing" -> pure . Left $ "@[fetchBatchResult] batch finalizing: " <> providerBatchId
+      "validating" -> pure . Left $ "@[fetchBatchResult] batch validating: " <> providerBatchId
+      _ -> pure . Left $ "@[fetchBatchResult] unknown batch status: " <> T.unpack bStatus.statusBS
 
 
 extractMainText :: A.Value -> Either String (T.Text, T.Text)

@@ -256,7 +256,7 @@ releaseFetchOutboxClaimStmt = [resultlessStatement|
        set fetch_claimed_by    = null,
            fetch_claim_token   = null,
            fetch_claimed_until = now() + make_interval(secs => $3 :: int4)
-     where provider_batch_uuid = $1 :: uuid
+     where batch_fk = $1 :: uuid
        and fetch_claim_token   = $2 :: uuid
   |]
 
@@ -264,7 +264,7 @@ listRequestsForBatchStmt :: Statement UUID (Vector UUID)
 listRequestsForBatchStmt = [vectorStatement|
     select request_id :: uuid
       from batcher.requests
-     where provider_batch_uuid = $1 :: uuid
+     where batch_fk = $1 :: uuid
        and state = 'completed'
   |]
 

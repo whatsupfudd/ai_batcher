@@ -148,17 +148,17 @@ claimFetchOutboxOne pool nodeId token batchUid ttlSec = do
 
 fetchWorker :: Context -> FetchConfig -> FetchJob -> IO ()
 fetchWorker ctxt cfg job = do
-  putStrLn $ "@[fetchWorker] job: " <> show job
+  -- putStrLn $ "@[fetchWorker] job: " <> show job
   (token, claimed) <- case job.claimTokenFJ of
     Just t  -> pure (t, True)
     Nothing -> do
       t  <- nextRandom
       ok <- claimFetchOutboxOne ctxt.pgPoolCT ctxt.nodeIdCT t job.batchUidFJ cfg.claimTtlSecondsFC
       pure (t, ok)
-  putStrLn $ "@[fetchWorker] claimed: " <> show claimed <> " token: " <> show token
-  unless claimed (pure ()) -- already claimed/processed elsewhere or outbox row missing
+  -- putStrLn $ "@[fetchWorker] claimed: " <> show claimed <> " token: " <> show token
 
-  when claimed $ do
+
+  if claimed then do
     eiRez <- ctxt.fetchBatchCT (job.batchUidFJ, job.providerBatchIdFJ)
     case eiRez of
       Left err -> do
@@ -195,6 +195,9 @@ fetchWorker ctxt cfg job = do
         putStrLn $ "@[fetchWorker] answers_materialized: " <> show (answersMaterializedDetails okCount missCount (V.length reqIdsVec))
         -- remove outbox row (token protected)
         deleteFetchOutbox ctxt.pgPoolCT job.batchUidFJ token
+  else
+    putStrLn $ "@[fetchWorker] not claimed: " <> show job
+
 
 --------------------------------------------------------------------------------
 -- DB ops

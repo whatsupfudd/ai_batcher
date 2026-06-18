@@ -63,14 +63,17 @@ produceCmd prodOpts rtOpts = do
             rezA <- Tp.ingestTemplate ctxt prodOpts
             case rezA of
               Left err -> putStrLn $ "@[produceCmd] ingestTemplate err: " <> show err
-              Right productionInfo -> unless (fromMaybe False prodOpts.dryRunIG) $ do
+              Right productionInfo -> case prodOpts.dryRunIG of
+                Just True ->
+                  putStrLn $ "@[produceCmd] productionInfo: " <> show productionInfo
+                _ -> do
                   putStrLn $ "@[produceCmd] productionID: " <> show productionInfo
-                  runEngines pgPool s3Conn apiKey targetProvider productionInfo prodOpts.modelIG
+                  runEngines pgPool s3Conn apiKey targetProvider productionInfo prodOpts.modelIG prodOpts.batchSizeIG
       pure ()
 
 
-runEngines :: Pool.Pool -> At.S3Conn -> T.Text -> T.Text -> (UUID, Text) -> Maybe Text -> IO ()
-runEngines pgPool s3Conn apiKey targetProvider productionInfo mbModel = do
+runEngines :: Pool.Pool -> At.S3Conn -> T.Text -> T.Text -> (UUID, Text) -> Maybe Text -> Maybe Int -> IO ()
+runEngines pgPool s3Conn apiKey targetProvider productionInfo mbModel mbBatchSize = do
   manager <- Hc.newManager tlsManagerSettings
   let
     fetchCtxt = Fe.Context {
@@ -115,7 +118,7 @@ runEngines pgPool s3Conn apiKey targetProvider productionInfo mbModel = do
         }
     submitCfg = Su.SubmitConfig {
           pollIntervalMicrosSC = 1000000
-        , batchSizeSC = 10
+        , batchSizeSC = fromMaybe 10 mbBatchSize
         , queueDepthSC = 100
         , workerCountSC = 10
         , claimTtlSecondsSC = 60

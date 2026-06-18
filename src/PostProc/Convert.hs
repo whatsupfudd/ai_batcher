@@ -11,7 +11,8 @@ import qualified Data.Text.IO as TIO
 import Text.Regex.TDFA ((=~))
 import Data.Void (Void)
 
-import System.FilePath ( (</>), (<.>), takeExtension )
+import System.FilePath ( (</>), (<.>), takeExtension, splitFileName )
+import System.Directory (createDirectoryIfMissing)
 
 import Text.Megaparsec
 import Text.Megaparsec.Char
@@ -65,11 +66,12 @@ convToDocx outputDir outName content =
 
 data CodeDef = CodeDef {
   content :: Text
+  , lang :: String
   , fileName :: String
   }
 
-convToCode :: FilePath -> Text -> IO ()
-convToCode outputDir content =
+convToHtmlJS :: FilePath -> Text -> IO ()
+convToHtmlJS outputDir content =
   let
     markdownContent = unescapeText content
     (eiHtmlCode, eiJsCode) = extractWebPage markdownContent
@@ -84,6 +86,28 @@ convToCode outputDir content =
         errMsg = unlines [either (<> "Error in HTML code: ") (const "") eiHtmlCode, either (<> "Error in JS code. ") (const "") eiJsCode]
       in
       putStrLn errMsg
+
+
+convToCode :: FilePath -> Text -> IO ()
+convToCode outputDir content =
+  let
+    markdownContent = unescapeText content
+    eiCode = extractCode markdownContent
+  in do
+  putStrLn $ "@[convToCode] content: " <> T.unpack (T.take 60 content)
+  case eiCode of
+    Right code ->
+      let
+        (dirs, fname) = splitFileName code.fileName
+        destDir = outputDir </> dirs
+      in do
+      createDirectoryIfMissing True destDir
+      TIO.writeFile (destDir </> fname) code.content
+    Left errMsg ->
+      let
+        outMsg = "@[convToCode] err: " <> errMsg
+      in
+      putStrLn outMsg
 
 
 saneFileName :: String -> String
@@ -121,6 +145,14 @@ webPageParser = do
   jsDef <- codeDefBlock "js"
   pure (htmlDef, jsDef)
 
+
+extractCode :: Text -> Either String CodeDef
+extractCode content =
+  case runParser anonCodeExtract "" content of
+    Left err -> Left (errorBundlePretty err)
+    Right codeDef -> Right codeDef
+
+
 codeDefBlock :: String -> Parser CodeDef
 codeDefBlock ext = do
   skipManyTill anySingle (lookAhead (fileNameLine ext))
@@ -128,8 +160,48 @@ codeDefBlock ext = do
   code <- codeBlock ext
   pure CodeDef
     { fileName = fname
+    , lang = ext
     , content  = code
     }
+
+
+{-
+Anonymous code extract:
+**File: `Syntax/Grammar.hs`**
+
+```<language>
+[... code ...]
+-}
+anonCodeExtract :: Parser CodeDef
+anonCodeExtract = do
+  -- many (char ' ' <|> char '\t')
+  some (oneOf ("*#-" :: String))
+  space
+  optional $ string "File:"
+  space
+  hasQuote <- option False $ True <$ string "`"
+  fname <- some (alphaNumChar <|> oneOf (".-_/" :: String))
+  when hasQuote $ void $ char '`'
+  many (oneOf ("*#-" :: String))
+  void $ many eol
+  many (char ' ' <|> char '\t')
+  string "```"
+  language <- some alphaNumChar
+  void eol
+  body <- manyTill anySingle (lookAhead closingFence)
+  _ <- closingFence
+  pure CodeDef { 
+      fileName = fname
+    , lang = language
+    , content = dropFinalEol (T.pack body)
+    }
+
+
+closingFence :: Parser ()
+closingFence = do
+  string "```"
+  void eol <|> eof
+
 
 fileNameLine :: String -> Parser String
 fileNameLine ext = try $ do
@@ -146,6 +218,7 @@ fileNameLine ext = try $ do
   void eol <|> eof
   pure fname
 
+
 codeBlock :: String -> Parser Text
 codeBlock extension = try $ do
   many eol
@@ -154,10 +227,7 @@ codeBlock extension = try $ do
   body <- manyTill anySingle (lookAhead closingFence)
   _ <- closingFence
   pure (dropFinalEol (T.pack body))
-  where
-    closingFence = do
-      string "```"
-      void eol <|> eof
+
 
 matchLanguage :: String -> Parser ()
 matchLanguage extension = do

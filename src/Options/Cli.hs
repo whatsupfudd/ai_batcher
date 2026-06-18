@@ -31,6 +31,7 @@ data ProducerOpts = ProducerOpts {
   , providerIG :: Maybe Text
   , modelIG :: Maybe Text
   , dryRunIG :: Maybe Bool
+  , batchSizeIG :: Maybe Int
   }
   deriving (Show)
 
@@ -213,6 +214,7 @@ producerOpts =
     <*> optional (strOption (long "provider" <> short 'p' <> metavar "PROVIDER" <> help "Provider to use for production."))
     <*> optional (strOption (long "model" <> short 'm' <> metavar "MODEL" <> help "Model to use for production."))
     <*> optional (flag False True (long "dry-run" <> short 'n' <> help "Dry run mode."))
+    <*> optional (option auto (long "batch-size" <> short 'b' <> metavar "BATCH_SIZE" <> help "Batch size to use for production."))
 
 
 receiverOpts :: Parser ReceiverOpts
@@ -224,7 +226,7 @@ processOpts :: Parser ProcessOpts
 processOpts =
   ProcessOpts
     <$> strArgument (metavar "PRODUCTION_NAME" <> help "Name of production to process.")
-    <*> strArgument (metavar "OUTPUT_MODE" <> help "Output mode to use for processing (docx or code).")
+    <*> strArgument (metavar "OUTPUT_MODE" <> help "Output mode to use for processing (code, docx, htmljs, text).")
     <*> optional (strOption (long "output-dir" <> short 'o' <> metavar "OUTPUT_DIR" <> help "Directory to write output to."))
 
 
