@@ -37,8 +37,13 @@ submitBatchToService manager provider apiKey requestPairs cacheKey mbModel =
       , effortSC = Nothing
       , systemPromptSC = Nothing
       }
-    advOaiCfg = St.ServiceConfig {
+    advOaiCfg_5_4 = St.ServiceConfig {
         modelSC = "gpt-5.4"
+      , effortSC = Just "high"
+      , systemPromptSC = Nothing
+      }
+    advOaiCfg_5_5 = St.ServiceConfig {
+        modelSC = "gpt-5.5"
       , effortSC = Just "high"
       , systemPromptSC = Nothing
       }
@@ -51,7 +56,8 @@ submitBatchToService manager provider apiKey requestPairs cacheKey mbModel =
           Just model -> case model of
             "gpt5.4-nano" -> Right nanoOaiCfg
             "gpt5.4-mini" -> Right miniOaiCfg
-            "gpt5.4-high" -> Right advOaiCfg
+            "gpt5.4-high" -> Right advOaiCfg_5_4
+            "gpt5.5-high" -> Right advOaiCfg_5_5
             _ -> Left $ "Unsupported model: " <> unpack model
       in
       case eiOaiCfg of
