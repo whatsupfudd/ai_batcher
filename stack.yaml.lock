@@ -34,8 +34,8 @@ packages:
     hackage: network-transport-tcp-0.8.6@sha256:82818f659c4324f1ef7d008803ee362669cbcef66c93bd00367e3370d547a813,3792
 snapshots:
 - completed:
-    sha256: 238fa745b64f91184f9aa518fe04bdde6552533d169b0da5256670df83a0f1a9
-    size: 721141
-    url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/22/44.yaml
+    sha256: f9f775487e1678844b9f031919ed508a88097aa883002a970d3cd6fc6308b5d2
+    size: 732679
+    url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/24/50.yaml
   original:
-    url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/22/44.yaml
+    url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/24/50.yaml

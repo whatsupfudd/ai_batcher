@@ -6,17 +6,17 @@ import Control.Monad.IO.Class (liftIO)
 
 import Data.ByteString (ByteString)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
+import qualified Data.Text.Encoding as Te
 import Data.Time.Clock (DiffTime)
 
 import GHC.Word (Word16)
 
-import qualified Hasql.Connection as Hc
-{-
-import qualified Hasql.Connection.Setting as HcS
-import qualified Hasql.Connection.Settings.Connection as HcSc
--}
-import qualified Hasql.Pool as Hp
+import Hasql.Pool (Pool, acquire, release)
+import qualified Hasql.Pool.Config as Pc
+import qualified Hasql.Connection.Setting.Connection.Param as Cp
+import qualified Hasql.Connection.Setting.Connection as Csc
+import qualified Hasql.Connection.Setting as Cs
+
 
 data PgDbConfig = PgDbConfig {
   port :: Word16
@@ -45,19 +45,14 @@ defaultPgDbConf = PgDbConfig {
   }
 
 
-startPg :: PgDbConfig -> ContT r IO Hp.Pool
+startPg :: PgDbConfig -> ContT r IO Pool
 startPg dbC =
   let
-    dbSettings = Hc.settings dbC.host dbC.port dbC.user dbC.passwd dbC.dbase
-    {-
-    pString :: ByteString
-    pString = "host=" <> dbC.host <> " port=" <> (T.encodeUtf8 . T.pack) (show dbC.port)
-          <> " user=" <> dbC.user <> " password=" <> dbC.passwd <> " dbname=" <> dbC.dbase
-    baseSettings = Hp.settings pString
-    -}
+    connParams = [Cp.host $ Te.decodeUtf8 dbC.host, Cp.port dbC.port, Cp.user $ Te.decodeUtf8 dbC.user, Cp.password $ Te.decodeUtf8 dbC.passwd, Cp.dbname $ Te.decodeUtf8 dbC.dbase]
+    csSetting = Cs.connection $ Csc.params connParams
+    pcSetting = Pc.staticConnectionSettings [ csSetting ]
+    poolSettings = [Pc.size dbC.poolSize, Pc.acquisitionTimeout dbC.acqTimeout, Pc.agingTimeout dbC.poolTimeOut, Pc.acquisitionTimeout dbC.poolIdleTime]
+    dbConfig = Pc.settings (pcSetting : poolSettings)
   in do
   liftIO . putStrLn $ "@[startPg] user: " <> show dbC.user <> " db: " <> show dbC.dbase <> "."
-  -- 0.10.1:
-  ContT $ bracket (Hp.acquire dbC.poolSize dbC.acqTimeout dbC.poolTimeOut dbC.poolIdleTime dbSettings) Hp.release
-  -- 1.3: ContT $ bracket (Hp.acquire settings) Hp.release
-
+  ContT $ bracket (acquire dbConfig) release

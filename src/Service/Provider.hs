@@ -47,6 +47,11 @@ submitBatchToService manager provider apiKey requestPairs cacheKey mbModel =
       , effortSC = Just "high"
       , systemPromptSC = Nothing
       }
+    advOaiCfg_5_6 = St.ServiceConfig {
+        modelSC = "gpt-5.6-sol"
+      , effortSC = Just "high"
+      , systemPromptSC = Nothing
+      }
   in
   case provider of
     "openai" ->
@@ -58,6 +63,7 @@ submitBatchToService manager provider apiKey requestPairs cacheKey mbModel =
             "gpt5.4-mini" -> Right miniOaiCfg
             "gpt5.4-high" -> Right advOaiCfg_5_4
             "gpt5.5-high" -> Right advOaiCfg_5_5
+            "gpt5.6-high" -> Right advOaiCfg_5_6
             _ -> Left $ "Unsupported model: " <> unpack model
       in
       case eiOaiCfg of
@@ -93,6 +99,6 @@ fetchBatchFromService manager provider apiKey (batchUid, providerBatchId) = do
                   Just requestUID -> Right $ St.RequestResult requestUID (Just content) Nothing
                   Nothing -> Left $ "Invalid requestID: " <> unpack requestID
               ) rez
-          in 
+          in
           pure $ Right (rawJson, listRez)
     _ -> pure . Left $ "Unsupported provider: " <> unpack provider

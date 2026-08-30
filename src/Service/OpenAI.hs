@@ -64,7 +64,7 @@ submitBatch cfg manager apiKey requestPairs cacheKey = do
     -- cacheKey = calcKeyFromRequests requestPairs
     systemPrompt = fromMaybe "" cfg.systemPromptSC
     requests = zipWith (curry (\((reqID, userPrompt), idx) ->
-          oneLineJSONL reqID idx momentStr systemPrompt userPrompt cacheKey cfg.modelSC cfg.effortSC)) (NE.toList requestPairs) [1..]
+          oneLineJSONL cfg reqID idx momentStr systemPrompt userPrompt cacheKey cfg.modelSC cfg.effortSC)) (NE.toList requestPairs) [1..]
     mergedRequests = LBS.fromStrict $ TE.encodeUtf8 $ T.intercalate "\n" requests
   uploadFileFromBS manager apiKey mergedRequests (Uu.toString batchID) "batch" >>= \case
     Left err -> pure . Left $ "@[submitBatch] uploadFileFromBS err: " <> err
@@ -82,42 +82,49 @@ calcKeyFromRequests requestPairs =
   in
   "doc-fnv1a64-" <> (T.pack . Ut.toHex64 . Ut.fnv1a64 $ TE.encodeUtf8 requestsText)
 
-oneLineJSONL :: UUID -> Int -> String -> Text -> Text -> Text -> Text -> Maybe Text -> Text
-oneLineJSONL reqID i moment systemPrompt userPrompt cacheKey model mbEffort =
+
+oneLineJSONL :: ServiceConfig -> UUID -> Int -> String -> Text -> Text -> Text -> Text -> Maybe Text -> Text
+oneLineJSONL cfg reqID i moment systemPrompt userPrompt cacheKey model mbEffort =
   let
     customId  = Uu.toString reqID    -- T.pack ("q_" <> moment <> "_" <> pad4 i)
     body :: A.Value
     body = A.object $
-      [ "model"            .= model
-      -- , "prompt_cache_key" .= cacheKey
+      [ "model" .= model
       , "max_output_tokens" .= A.Number 200000
-      , "input"            .= A.toJSON
+      , "input" .= A.toJSON
           [ A.object
-              [ "role"    .= ("system" :: Text)
-              , "content" .= [ A.object ["type" .= ("input_text" :: Text)
-                                          , "text" .= systemPrompt
-                                          ]
-                              ]
+              [ "role" .= ("system" :: Text)
+              , "content" .= [ A.object ["type" .= ("input_text" :: Text), "text" .= systemPrompt ]]
               ]
           , A.object
-              [ "role"    .= ("user" :: Text)
-              , "content" .= [ A.object ["type"   .= ("input_text" :: Text)
-                                          , "text"   .= userPrompt
-                                          ]
-                              ]
+              [ "role" .= ("user" :: Text)
+              , "content" .= [ A.object ["type"   .= ("input_text" :: Text), "text"   .= userPrompt ]]
               ]
           ]
       ]
+      <> buildCacheInfo cfg cacheKey
       <> case mbEffort of
         Just effort -> [ "reasoning" .= A.object ["effort" .= effort] ]
         Nothing -> []
-    lineObj = A.object
-      [ "custom_id" .= customId
-      , "method"    .= ("POST" :: Text)
-      , "url"       .= ("/v1/responses" :: Text)
-      , "body"      .= body
+    lineObj = A.object [
+        "custom_id" .= customId
+      , "method" .= ("POST" :: Text)
+      , "url" .= ("/v1/responses" :: Text)
+      , "body" .= body
       ]
   in TE.decodeUtf8 (LBS.toStrict (A.encode lineObj))
+
+
+buildCacheInfo :: ServiceConfig -> Text -> [At.Pair]
+buildCacheInfo servCfg cacheKey =
+  case servCfg.modelSC of
+    "gpt-5.6-sol" -> [ 
+      "prompt_cache_key" .= cacheKey
+      , "prompt_cache_options" .= A.object [ "mode" .= ("implicit" :: Text), "ttl" .= ("30m" :: Text) ]
+      ]
+    _ -> [ "prompt_cache_key" .= cacheKey ]
+
+
 
 
 data FileUploadResponse = FileUploadResponse {
