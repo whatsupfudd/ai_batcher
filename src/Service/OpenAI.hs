@@ -42,7 +42,9 @@ import Network.HTTP.Client.TLS ( tlsManagerSettings )
 import Network.HTTP.Client.MultipartFormData ( partBS, partFileRequestBody, formDataBody )
 import Network.HTTP.Types (HeaderName)
 
-import Service.Types
+import Service.OpenAI.Types
+import qualified Service.OpenAI.Cache as Ch
+import qualified Service.Types as St
 import qualified Utils as Ut
 
 
@@ -55,16 +57,18 @@ data BatchStatus = BatchStatus
   } deriving (Show)
 
 
-submitBatch :: ServiceConfig -> Manager -> String -> NE.NonEmpty (UUID, Text) -> Text -> IO (Either String (Text, UUID))
-submitBatch cfg manager apiKey requestPairs cacheKey = do
+-- type BatchRequest = (NE.NonEmpty (UUID, Text), Text) => (requestPairs, cacheKey)
+
+submitBatch :: ServiceConfig -> Manager -> String -> V.Vector St.BatchRequest -> UUID -> IO (Either String (Text, UUID))
+submitBatch cfg manager apiKey bRequests prodID = do
   moment <- getCurrentTime
   batchID <- U4.nextRandom
   let
     momentStr = Tm.formatTime Tm.defaultTimeLocale "%y%m%d_%H%M%S" moment
     -- cacheKey = calcKeyFromRequests requestPairs
-    systemPrompt = fromMaybe "" cfg.systemPromptSC
-    requests = zipWith (curry (\((reqID, userPrompt), idx) ->
-          oneLineJSONL cfg reqID idx momentStr systemPrompt userPrompt cacheKey cfg.modelSC cfg.effortSC)) (NE.toList requestPairs) [1..]
+    requests = zipWith (curry (\(aReq, idx) ->
+          oneLineJSONL cfg aReq.idBR idx momentStr aReq cfg.modelSC cfg.effortSC)
+        ) (V.toList bRequests) [1..]
     mergedRequests = LBS.fromStrict $ TE.encodeUtf8 $ T.intercalate "\n" requests
   uploadFileFromBS manager apiKey mergedRequests (Uu.toString batchID) "batch" >>= \case
     Left err -> pure . Left $ "@[submitBatch] uploadFileFromBS err: " <> err
@@ -83,26 +87,24 @@ calcKeyFromRequests requestPairs =
   "doc-fnv1a64-" <> (T.pack . Ut.toHex64 . Ut.fnv1a64 $ TE.encodeUtf8 requestsText)
 
 
-oneLineJSONL :: ServiceConfig -> UUID -> Int -> String -> Text -> Text -> Text -> Text -> Maybe Text -> Text
-oneLineJSONL cfg reqID i moment systemPrompt userPrompt cacheKey model mbEffort =
+oneLineJSONL :: ServiceConfig -> UUID -> Int -> String -> St.BatchRequest -> Text -> Maybe Text -> Text
+oneLineJSONL cfg reqID i moment request model mbEffort =
   let
     customId  = Uu.toString reqID    -- T.pack ("q_" <> moment <> "_" <> pad4 i)
+    -- TODO: Find a way to move that to a central cache key calculation function
+    cacheKey = case cfg.cachePolicySC.generationCP of
+      NoneCG -> ""
+      SimpleCG -> St.calcCache request.contextBR
+      Inter_55CG -> St.calcCache request.contextBR
+      Block_56CG -> St.calcCache request.contextBR
+      _ -> ""
     body :: A.Value
     body = A.object $
       [ "model" .= model
       , "max_output_tokens" .= A.Number 200000
-      , "input" .= A.toJSON
-          [ A.object
-              [ "role" .= ("system" :: Text)
-              , "content" .= [ A.object ["type" .= ("input_text" :: Text), "text" .= systemPrompt ]]
-              ]
-          , A.object
-              [ "role" .= ("user" :: Text)
-              , "content" .= [ A.object ["type"   .= ("input_text" :: Text), "text"   .= userPrompt ]]
-              ]
-          ]
+      , "input" .= buildPrompt cfg request
       ]
-      <> buildCacheInfo cfg cacheKey
+      <> Ch.buildCacheInfo cfg.cachePolicySC cacheKey
       <> case mbEffort of
         Just effort -> [ "reasoning" .= A.object ["effort" .= effort] ]
         Nothing -> []
@@ -115,6 +117,29 @@ oneLineJSONL cfg reqID i moment systemPrompt userPrompt cacheKey model mbEffort 
   in TE.decodeUtf8 (LBS.toStrict (A.encode lineObj))
 
 
+buildPrompt :: ServiceConfig -> St.BatchRequest -> A.Value
+buildPrompt cfg request =
+  A.toJSON $ map contextItem request.contextBR <> map contentItem (NE.toList request.messagesBR)
+  where
+  contextItem :: St.RequestContext -> A.Value
+  contextItem context =
+    A.object [
+          "role" .= St.showRolePR context.rolePC
+        , "content" .= [ A.object $
+              [ "type" .= ("input_text" :: Text), "text" .= context.memoryPC ]
+              <> Ch.promptCacheInfo cfg.cachePolicySC
+            ]
+        ]
+  contentItem :: St.RequestMessage -> A.Value
+  contentItem content =
+    A.object [
+          "role" .= ("user" :: Text)
+        , "content" .= [ A.object ["type" .= ("input_text" :: Text), "text" .= content.contentPR ]]
+        ]
+
+
+
+{-
 buildCacheInfo :: ServiceConfig -> Text -> [At.Pair]
 buildCacheInfo servCfg cacheKey =
   case servCfg.modelSC of
@@ -123,7 +148,7 @@ buildCacheInfo servCfg cacheKey =
       , "prompt_cache_options" .= A.object [ "mode" .= ("implicit" :: Text), "ttl" .= ("30m" :: Text) ]
       ]
     _ -> [ "prompt_cache_key" .= cacheKey ]
-
+-}
 
 
 
@@ -282,17 +307,17 @@ pad4 n = let s = show n in replicate (4 - length s) '0' ++ s
 
 -- Fetching:
 
-getBatchStatus :: Manager -> String -> (UUID, String) -> IO (Either String ProviderBatchStatus)
+getBatchStatus :: Manager -> String -> (UUID, String) -> IO (Either String St.ProviderBatchStatus)
 getBatchStatus manager apiKey (bid, providerBatchId) = do
   innerGetBatchStatus manager apiKey (bid, providerBatchId) >>= \case
     Left (errMsg, respBody) -> pure . Left $ "@[getBatchStatus] innerGetBatchStatus err: " <> errMsg <> ", response: " <> show respBody
     Right bStatus -> case bStatus.statusBS of
-      "completed" -> pure . Right $ BatchCompleted
-      "failed" -> pure . Right $ BatchFailed (fromMaybe "" bStatus.errorFileIdBS)
-      "cancelled" -> pure . Right $ BatchCancelled (fromMaybe "" bStatus.errorFileIdBS)
-      "finalizing" -> pure . Right $ BatchFinalizing
-      "in_progress" -> pure . Right $ BatchInProgress
-      "validating" -> pure . Right $ BatchValidating
+      "completed" -> pure . Right $ St.BatchCompleted
+      "failed" -> pure . Right $ St.BatchFailed (fromMaybe "" bStatus.errorFileIdBS)
+      "cancelled" -> pure . Right $ St.BatchCancelled (fromMaybe "" bStatus.errorFileIdBS)
+      "finalizing" -> pure . Right $ St.BatchFinalizing
+      "in_progress" -> pure . Right $ St.BatchInProgress
+      "validating" -> pure . Right $ St.BatchValidating
       _ -> pure . Left $ "@[getBatchStatus] unknown batch status: " <> T.unpack bStatus.statusBS
 
 
@@ -324,7 +349,7 @@ innerGetBatchStatus manager apiKey (bid, providerBatchId) = do
     Right bStatus -> pure $ Right bStatus
 
 
-fetchBatchResult :: Manager -> String -> (UUID, String) -> IO (Either String (LBS.ByteString, V.Vector (T.Text, T.Text)))
+fetchBatchResult :: Manager -> String -> (UUID, String) -> IO (Either String (LBS.ByteString, V.Vector (T.Text, T.Text, St.MetaInfo)))
 fetchBatchResult manager apiKey (bid, providerBatchId) = do
   innerGetBatchStatus manager apiKey (bid, providerBatchId) >>= \case
     Left (errMsg, respBody) -> pure . Left $ "@[fetchBatchResult] innerGetBatchStatus err: " <> errMsg <> ", response: " <> show respBody
@@ -365,62 +390,67 @@ fetchBatchResult manager apiKey (bid, providerBatchId) = do
       _ -> pure . Left $ "@[fetchBatchResult] unknown batch status: " <> T.unpack bStatus.statusBS
 
 
-extractMainText :: A.Value -> Either String (T.Text, T.Text)
+extractMainText :: A.Value -> Either String (T.Text, T.Text, St.MetaInfo)
 extractMainText v =
   case At.parseEither parseFromRoot v of
-    Right (requestID, content) | not (T.null (T.strip content)) -> Right (requestID, T.strip content)
+    Right (requestID, content, metaInfo) | not (T.null (T.strip content)) -> Right (requestID, T.strip content, metaInfo)
     Left erMsg -> Left erMsg
 
 
-parseFromRoot :: A.Value -> At.Parser (T.Text, T.Text)
+parseFromRoot :: A.Value -> At.Parser (T.Text, T.Text, St.MetaInfo)
 parseFromRoot = A.withObject "root" $ \o -> do
   customId <- o .: "custom_id" :: At.Parser T.Text
   mResp <- o .:? "response"
-  content <- case mResp of
+  (content, metaInfo) <- case mResp of
     Just (A.Object ro) -> do
       body <- ro .: "body"
       parseFromBody body
     _ ->
       -- Fallback: try to parse this object directly as a Responses body (for non-batch use)
       parseFromBody (A.Object o)
-  pure (customId, content)
+  pure (customId, content, metaInfo)
 
 
-parseFromBody :: A.Value -> At.Parser T.Text
+parseFromBody :: A.Value -> At.Parser (T.Text, St.MetaInfo)
 parseFromBody = A.withObject "body" $ \bo -> do
   -- 1) Try convenience field `output_text` (string or array of strings)
-  mOT  <- bo .:? "output_text" :: At.Parser (Maybe A.Value)
+  mOT <- bo .:? "output_text" :: At.Parser (Maybe A.Value)
   let
     fromOT = case mOT of
         Just (A.String t) -> [t]
-        Just (A.Array arr)-> [ t | A.String t <- V.toList arr ]
-        _                 -> []
+        Just (A.Array arr) -> [ t | A.String t <- V.toList arr ]
+        _ -> []
 
   -- 2) Canonical `output` array ⇒ collect message.content[].text
   mOut <- bo .:? "output"
   fromOutput <- case mOut of
     Just (A.Array arr) -> pure (concatMap collectFromOutputItem (V.toList arr))
-    _                  -> pure []
-
+    _ -> pure []
+  metaInfo <- St.MetaInfo <$> bo .:? "usage"
+    <*> bo .:? "model"
+    <*> bo .:? "id"
   let
     texts = filter (not . T.null) (map T.strip (fromOT ++ fromOutput))
-  pure $ if null texts then T.empty else T.intercalate "\n\n" texts
+    content = if null texts then T.empty else T.intercalate "\n\n" texts
+  pure (content, metaInfo)
 
 
 collectFromOutputItem :: A.Value -> [T.Text]
 collectFromOutputItem v =
-  case At.parseEither (A.withObject "out_item" $ \oi -> do
-         ty <- oi .:? "type" :: At.Parser (Maybe T.Text)
-         case ty of
-           Just "message" -> do
-             mc <- oi .:? "content"
-             case mc of
-               Just (A.Array carr) -> pure (concatMap collectFromContent (V.toList carr))
-               _                   -> pure []
-           _ -> pure []
-       ) v of
+  case At.parseEither (A.withObject "out_item" parseOutItem) v of
     Right xs -> xs
-    Left  _  -> []
+    Left _ -> []
+  where
+  parseOutItem oi = do
+    ty <- oi .:? "type" :: At.Parser (Maybe T.Text)
+    case ty of
+      Just "message" -> do
+        mc <- oi .:? "content"
+        case mc of
+          Just (A.Array carr) -> pure (concatMap collectFromContent (V.toList carr))
+          _ -> pure []
+      _ -> pure []
+
 
 collectFromContent :: A.Value -> [T.Text]
 collectFromContent v =
@@ -430,7 +460,7 @@ collectFromContent v =
          pure (maybeToList mt)
        ) v of
     Right xs -> xs
-    Left  _  -> []
+    Left _ -> []
 
 
 -- Full extraction:

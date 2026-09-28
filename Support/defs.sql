@@ -96,6 +96,27 @@ CREATE INDEX IF NOT EXISTS requests_poll_claim_idx ON batcher.requests (state, p
 -- Helpful index for batch->requests updates
 CREATE INDEX IF NOT EXISTS requests_by_batch_completed ON batcher.requests (provider_batch_uuid, state);
 
+create table if not exists batcher.memories (
+  memory_uid int8 GENERATED ALWAYS AS IDENTITY primary key
+  , production_fk uuid NOT NULL REFERENCES batcher.productions(production_id) ON DELETE CASCADE
+  , item_index int4 not null
+  , item_meta jsonb not null default '{}'::jsonb
+  , content text not null
+  , content_hash text not null
+  , created_at timestamptz not null default now()
+);
+
+CREATE INDEX IF NOT EXISTS memories_by_production_idx ON batcher.memories (production_fk);
+
+create table if not exists batcher.request_memories (
+  request_fk uuid not null references batcher.requests(request_id) on delete cascade
+  , memory_fk int8 not null references batcher.memories(memory_uid) on delete cascade
+  , created_at timestamptz not null default now()
+  , primary key (request_fk, memory_fk)
+);
+
+CREATE INDEX IF NOT EXISTS request_memories_by_request_idx ON batcher.request_memories (request_fk);
+CREATE INDEX IF NOT EXISTS request_memories_by_memory_idx ON batcher.request_memories (memory_fk);
 
 -- “Transaction for requests”: append-only state/event history.
 CREATE TABLE IF NOT EXISTS batcher.request_events (

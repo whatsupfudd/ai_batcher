@@ -13,9 +13,12 @@ import Network.HTTP.Client (Manager)
 
 import qualified Data.Aeson as Ae
 
-import qualified Service.Types as St
 import qualified Service.OpenAI as Oai
+import qualified Service.OpenAI.Models as OaiM
+import Service.OpenAI.Types (ServiceConfig (..)) -- For showing modelSC.
+import qualified Service.Types as St
 import qualified Engine.Poll as Po
+
 
 getCredsForProvider :: Text -> IO (Either String Text)
 getCredsForProvider provider = do
@@ -24,53 +27,19 @@ getCredsForProvider provider = do
     _ -> pure . Left $ "Unsupported provider: " <> unpack provider
 
 
-submitBatchToService :: Manager -> Text -> Text -> NE.NonEmpty (UUID, Text) -> Text -> Maybe Text -> IO (Either String (Text, UUID))
-submitBatchToService manager provider apiKey requestPairs cacheKey mbModel =
-  let
-    nanoOaiCfg = St.ServiceConfig {
-        modelSC = "gpt-5.4-nano"
-      , effortSC = Nothing
-      , systemPromptSC = Nothing
-      }
-    miniOaiCfg = St.ServiceConfig {
-        modelSC = "gpt-5.4-mini"
-      , effortSC = Nothing
-      , systemPromptSC = Nothing
-      }
-    advOaiCfg_5_4 = St.ServiceConfig {
-        modelSC = "gpt-5.4"
-      , effortSC = Just "high"
-      , systemPromptSC = Nothing
-      }
-    advOaiCfg_5_5 = St.ServiceConfig {
-        modelSC = "gpt-5.5"
-      , effortSC = Just "high"
-      , systemPromptSC = Nothing
-      }
-    advOaiCfg_5_6 = St.ServiceConfig {
-        modelSC = "gpt-5.6-sol"
-      , effortSC = Just "high"
-      , systemPromptSC = Nothing
-      }
-  in
+-- Was receiving a NonEmpty (UUID, Text) + un cacheKey.
+submitBatchToService :: Manager -> Text -> Text -> Vector St.BatchRequest -> UUID -> Maybe Text -> IO (Either String (Text, UUID))
+submitBatchToService manager provider apiKey requests prodID mbModel =
   case provider of
     "openai" ->
-      let
-        eiOaiCfg = case mbModel of
-          Nothing -> Right nanoOaiCfg
-          Just model -> case model of
-            "gpt5.4-nano" -> Right nanoOaiCfg
-            "gpt5.4-mini" -> Right miniOaiCfg
-            "gpt5.4-high" -> Right advOaiCfg_5_4
-            "gpt5.5-high" -> Right advOaiCfg_5_5
-            "gpt5.6-high" -> Right advOaiCfg_5_6
-            _ -> Left $ "Unsupported model: " <> unpack model
-      in
-      case eiOaiCfg of
+      case OaiM.getOpenAIModel mbModel of
         Left errMsg -> pure . Left $ errMsg
         Right oaiCfg -> do
           putStrLn $ "@[submitBatchToService] using model: " <> unpack oaiCfg.modelSC
-          Oai.submitBatch oaiCfg manager (unpack apiKey) requestPairs cacheKey
+          if V.null requests then
+            pure . Left $ "@[submitBatchToService] no requests to submit"
+          else do
+            Oai.submitBatch oaiCfg manager (unpack apiKey) requests prodID
     _ -> pure . Left $ "Unsupported provider: " <> unpack provider
 
 
@@ -85,7 +54,8 @@ pollStatusFromService manager provider apiKey (batchUid, providerBatchId) = do
     _ -> pure . Left $ "Unsupported provider: " <> unpack provider
 
 
-fetchBatchFromService :: Manager -> Text -> Text -> (UUID, Text) -> IO (Either String (Lbs.ByteString, Vector (Either String St.RequestResult)))
+fetchBatchFromService :: Manager -> Text -> Text -> (UUID, Text)
+    -> IO (Either String (Lbs.ByteString, Vector (Either String St.RequestResult)))
 fetchBatchFromService manager provider apiKey (batchUid, providerBatchId) = do
   case provider of
     "openai" -> do
@@ -94,9 +64,9 @@ fetchBatchFromService manager provider apiKey (batchUid, providerBatchId) = do
         Left errMsg -> pure . Left $ "fetchBatchFromService err: " <> errMsg
         Right (rawJson, rez) ->
           let
-            listRez = V.map (\(requestID, content) ->
+            listRez = V.map (\(requestID, content, metaData) ->
                 case Uu.fromString $ unpack requestID of
-                  Just requestUID -> Right $ St.RequestResult requestUID (Just content) Nothing
+                  Just requestUID -> Right $ St.RequestResult requestUID (Just content) (Just metaData)
                   Nothing -> Left $ "Invalid requestID: " <> unpack requestID
               ) rez
           in

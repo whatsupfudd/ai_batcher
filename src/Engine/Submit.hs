@@ -15,11 +15,12 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async)
 import Control.Concurrent.STM
 import Control.Exception (Exception, throwIO)
-import Control.Monad (forever)
+import Control.Monad (forever, forM_)
 
 import Data.Aeson (Value)
 import qualified Data.Aeson as Ae
 import Data.Int (Int32)
+import qualified Data.Map as Mp
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
@@ -37,6 +38,7 @@ import qualified Hasql.Transaction as Tx
 import qualified DB.EngineStmt as Es
 import qualified Engine.Runner as R
 import qualified Engine.Support as Sup
+import qualified Service.Types as St
 
 --------------------------------------------------------------------------------
 -- Public API
@@ -44,7 +46,7 @@ import qualified Engine.Support as Sup
 data Context = Context
   { pgPoolCT      :: Pool.Pool
   , nodeIdCT      :: Text
-  , sendRequestCT :: NonEmpty (UUID, Text) -> IO (Either SubmitError SubmitOk)
+  , sendRequestCT :: Vector St.BatchRequest -> IO (Either SubmitError SubmitOk)
   , enqueuePollCT :: UUID ->Text -> IO () -- fast-path: batch uid to Engine.Poll
   }
 
@@ -119,55 +121,61 @@ kickFeeder cfg q = forever $ do
 submitWorker :: Context -> SubmitConfig -> SubmitMsg -> IO ()
 submitWorker ctxt cfg SubmitKick = drainLoop
   where
-    drainLoop = do
-      submitClaimToken <- nextRandom
-      claimed <- claimEnteredRequests ctxt.pgPoolCT ctxt.nodeIdCT submitClaimToken
-                        cfg.batchSizeSC cfg.claimTtlSecondsSC
+  drainLoop = do
+    submitClaimToken <- nextRandom
+    claimed <-
+      claimEnteredRequests ctxt.pgPoolCT ctxt.nodeIdCT submitClaimToken cfg.batchSizeSC cfg.claimTtlSecondsSC
 
-      if V.null claimed
-        then pure ()
-        else do
-          processOne submitClaimToken claimed
-          drainLoop
+    if V.null claimed then
+      pure ()
+    else do
+      processOne submitClaimToken claimed
+      drainLoop
 
-    processOne submitClaimToken claimedVec = do
-      let claimedList = V.toList claimedVec
-          reqPairs :: NonEmpty (UUID, Text)
-          reqPairs =
-            NE.fromList (map (\cr -> (requestIdCR cr, requestTextCR cr)) claimedList)
-
-      res <- ctxt.sendRequestCT reqPairs
-      case res of
-        Left err ->
-          releaseClaimWithError ctxt.pgPoolCT submitClaimToken err claimedList
-
-        Right submitOk -> do
-          -- Persist: create batch + associate requests + mark requests submitted + events.
-          persistSubmittedBatch ctxt.pgPoolCT submitClaimToken submitOk.batchUidSO
-                  submitOk.providerBatchIdSO claimedList
-
-          -- Fast path: poll this batch immediately.
-          ctxt.enqueuePollCT submitOk.batchUidSO submitOk.providerBatchIdSO
+  processOne :: UUID -> Vector St.BatchRequest -> IO ()
+  processOne submitClaimToken claimedRequests = do
+    res <- ctxt.sendRequestCT claimedRequests
+    case res of
+      Left err -> releaseClaimWithError ctxt.pgPoolCT submitClaimToken err claimedRequests
+      Right submitOk -> do
+        -- Persist: create batch + associate requests + mark requests submitted + events.
+        persistSubmittedBatch ctxt.pgPoolCT submitClaimToken submitOk.batchUidSO submitOk.providerBatchIdSO claimedRequests
+        -- Fast path: poll this batch immediately.
+        ctxt.enqueuePollCT submitOk.batchUidSO submitOk.providerBatchIdSO
 
 --------------------------------------------------------------------------------
 -- DB operations (all in terms of companion batch tables)
 
-claimEnteredRequests
-  :: Pool.Pool
-  -> Text
-  -> UUID
-  -> Int
-  -> Int32
-  -> IO (Vector ClaimedRequest)
+claimEnteredRequests :: Pool.Pool -> Text -> UUID -> Int -> Int32 -> IO (Vector St.BatchRequest)
 claimEnteredRequests pool nodeId submitClaimToken limitN ttlSec = do
-  ei <-
-    Es.execStmt "claimEnteredRequests" pool $
-      Tx.statement
-        (fromIntegral limitN, nodeId, submitClaimToken, ttlSec)
-        Es.claimRequestsStmt
-  case ei of
-    Left err   -> throwIO (DbError (T.pack (show err)))
-    Right rows -> pure (V.map (uncurry ClaimedRequest) rows)
+  eiReqRows <- Es.execStmt "claimEnteredRequests" pool $
+      Tx.statement (fromIntegral limitN, nodeId, submitClaimToken, ttlSec) Es.claimRequestsStmt
+  case eiReqRows of
+    Left err -> throwIO (DbError (T.pack (show err)))
+    Right reqRows ->
+      let
+        reqIDs = V.map fst reqRows
+      in do
+      eiMemories <- Es.execStmt "fetchMemories" pool $ Tx.statement reqIDs Es.fetchMemories
+      case eiMemories of
+        Left err -> throwIO (DbError (T.pack (show err)))
+        Right memRows ->
+          let
+            memMap = foldl groupMemories Mp.empty memRows
+            bRequests = V.map (\(reqId, msgTxt) ->
+                let
+                  reqContexts = Mp.findWithDefault [] reqId memMap
+                in
+                St.BatchRequest reqId reqContexts (NE.singleton (St.RequestMessage reqId msgTxt))
+              ) reqRows
+          in
+          pure bRequests
+          -- (V.map (uncurry ClaimedRequest) rows)
+  where
+  groupMemories :: Mp.Map UUID ([St.RequestContext]) -> (UUID, Int32, Value, Int32, Text, Text)
+        -> Mp.Map UUID ([St.RequestContext])
+  groupMemories accum (reqId, memId, metaData, seqIdx, content, cHash) =
+    Mp.insertWith (<>) reqId [St.RequestContext content St.DeveloperPR] accum
 
 -- Success path:
 --  1) insert batches row
@@ -175,54 +183,41 @@ claimEnteredRequests pool nodeId submitClaimToken limitN ttlSec = do
 --  3) batch_requests association (write-once)
 --  4) mark each request submitted (state + clear submit-claim)
 --  5) request_events: submitted (append-only)
-persistSubmittedBatch
-  :: Pool.Pool
-  -> UUID       -- submit claim token (for guarded request update)
-  -> UUID       -- batch uid (our UUID)
-  -> Text       -- provider batch id (text)
-  -> [ClaimedRequest]
-  -> IO ()
-persistSubmittedBatch pool submitClaimToken batchUid providerBatchId reqs = do
+-- submitClaimToken: for guarded request update
+
+persistSubmittedBatch :: Pool.Pool -> UUID -> UUID -> Text -> Vector St.BatchRequest -> IO ()
+persistSubmittedBatch pool submitClaimToken batchId providerBatchId requests =
   let
-    detailsBatch = batchSubmittedDetails batchUid providerBatchId (length reqs)
-
+    detailsBatch = batchSubmittedDetails batchId providerBatchId (length requests)
+  in do
   eiRez <- Es.execStmt "persistSubmittedBatch" pool $ do
-    Tx.statement (batchUid, providerBatchId) Es.insertBatchStmt
-    Tx.statement (batchUid, "submitted" :: Text, detailsBatch) Es.insertBatchEventStmt
-
-    V.forM_ (V.fromList reqs) $ \cr -> do
+    Tx.statement (batchId, providerBatchId) Es.insertBatchStmt
+    Tx.statement (batchId, "submitted" :: Text, detailsBatch) Es.insertBatchEventStmt
+    V.forM_ requests $ \bReq -> do
       -- association table (write-once; idempotent)
-      Tx.statement (requestIdCR cr, batchUid, Nothing) Es.insertBatchRequestStmt
-
+      Tx.statement (bReq.idBR, batchId, Nothing) Es.insertBatchRequestStmt
       -- request state transition (guarded by claim token)
-      Tx.statement (requestIdCR cr, submitClaimToken) Es.markRequestSubmittedStmt
-
+      Tx.statement (bReq.idBR, submitClaimToken) Es.markRequestSubmittedStmt
       -- append-only request history
-      Tx.statement
-        (requestIdCR cr, "submitted" :: Text, requestSubmittedDetails batchUid providerBatchId)
-        Es.insertRequestEventStmt
+      Tx.statement (bReq.idBR, "submitted" :: Text, requestSubmittedDetails batchId providerBatchId) Es.insertRequestEventStmt
 
   case eiRez of
     Left err -> do
       putStrLn $ "@[persistSubmittedBatch] error: " <> show err
       throwIO (DbError (T.pack (show err)))
-    Right _  -> pure ()
+    Right _ -> pure ()
 
-releaseClaimWithError
-  :: Pool.Pool
-  -> UUID
-  -> SubmitError
-  -> [ClaimedRequest]
-  -> IO ()
-releaseClaimWithError pool submitClaimToken submitErr reqs = do
-  let details = submitFailedDetails submitErr.codeSE submitErr.messageSE
 
-  ei <- Es.execStmt "releaseClaimWithError" pool $ do
-    V.forM_ (V.fromList reqs) $ \cr -> do
-      Tx.statement (requestIdCR cr, submitClaimToken) Es.releaseClaimStmt
-      Tx.statement (requestIdCR cr, "entered" :: Text, details) Es.insertRequestEventStmt
-
-  case ei of
+releaseClaimWithError :: Pool.Pool -> UUID -> SubmitError -> Vector St.BatchRequest -> IO ()
+releaseClaimWithError pool submitClaimToken submitErr requests =
+  let
+    details = submitFailedDetails submitErr.codeSE submitErr.messageSE
+  in do
+  eiRez <- Es.execStmt "releaseClaimWithError" pool $ do
+    V.forM_ requests $ \bReq -> do
+      Tx.statement (bReq.idBR, submitClaimToken) Es.releaseClaimStmt
+      Tx.statement (bReq.idBR, "entered" :: Text, details) Es.insertRequestEventStmt
+  case eiRez of
     Left err -> throwIO (DbError (T.pack (show err)))
     Right _  -> pure ()
 

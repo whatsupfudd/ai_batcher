@@ -62,6 +62,38 @@ insertRequest =
   |]
 
 
+insertMemory :: Statement (UUID, Int32, Value, Text, Text) Int64
+insertMemory =
+  [singletonStatement|
+    insert into batcher.memories
+      (production_fk, item_index, item_meta, content, content_hash)
+    values
+      ($1 :: uuid, $2 :: int4, $3 :: jsonb, $4 :: text, $5 :: text)
+    returning memory_uid :: int8
+  |]
+
+
+linkMemoryToRequest :: Statement (UUID, Int64) ()
+linkMemoryToRequest =
+  [resultlessStatement|
+    insert into batcher.request_memories
+      (request_fk, memory_fk)
+    values
+      ($1 :: uuid, $2 :: int8)
+  |]
+
+
+findMemoryByHash :: Statement (Text) (Maybe Int64)
+findMemoryByHash =
+  [maybeStatement|
+    select
+      memory_uid::int8
+    from batcher.memories
+    where
+      content_hash = $1::text
+  |]
+
+
 insertRequestEvent :: Statement (UUID, Text, Value) ()
 insertRequestEvent =
   [resultlessStatement|

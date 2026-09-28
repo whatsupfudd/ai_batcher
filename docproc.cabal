@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.37.0.
+-- This file has been generated from package.yaml by hpack version 0.38.1.
 --
 -- see: https://github.com/sol/hpack
 
@@ -44,8 +44,10 @@ library
       Commands.Fetch
       Commands.GenDocs
       Commands.Help
+      Commands.ImgTest
       Commands.Load
       Commands.PostP
+      Commands.PrintTest
       Commands.Process
       Commands.Producer
       Commands.Receiver
@@ -72,6 +74,9 @@ library
       PostProc.Access
       PostProc.Convert
       Service.OpenAI
+      Service.OpenAI.Cache
+      Service.OpenAI.Models
+      Service.OpenAI.Types
       Service.Provider
       Service.Types
       Utils
@@ -97,6 +102,7 @@ library
     , conduit
     , conduit-extra
     , containers
+    , data-default
     , directory
     , distributed-process
     , distributed-process-simplelocalnet
@@ -174,6 +180,7 @@ executable docproc
     , conduit
     , conduit-extra
     , containers
+    , data-default
     , directory
     , distributed-process
     , distributed-process-simplelocalnet
@@ -253,6 +260,7 @@ test-suite docproc-test
     , conduit
     , conduit-extra
     , containers
+    , data-default
     , directory
     , distributed-process
     , distributed-process-simplelocalnet

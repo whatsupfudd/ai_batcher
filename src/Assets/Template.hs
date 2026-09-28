@@ -6,10 +6,12 @@ module Assets.Template where
 import Control.Exception (Exception, throwIO)
 import Control.Monad (forM, forM_, when)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.Writer.Lazy (Writer)
+import qualified Control.Monad.Trans.Writer.Strict as Mws
+import qualified Control.Monad.Trans.State as Mst
 
 import qualified Data.ByteString.Lazy as Lbs
 import Data.Char (isSpace)
+import Data.Default (def)
 import Data.Functor.Identity as Fi
 import Data.Int (Int32, Int64)
 import Data.List (foldl')
@@ -17,6 +19,8 @@ import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Lazy as Tl
+import qualified Data.Text.Lazy.Builder as Tlb
 import Data.UUID (UUID)
 import Data.UUID as Uu
 import qualified Data.UUID.V4 as Uu4
@@ -37,16 +41,20 @@ import qualified Hasql.Transaction.Sessions as TxS
 import qualified Hasql.Session as Hs
 
 import Text.Ginger.Parse (IncludeResolver, parseGinger, SourcePos, ParserError)
-import Text.Ginger.Run (easyRender)
+import qualified Text.Ginger.Run as Gr
 import Text.Ginger.Run.Type (Run)
-import Text.Ginger.GVal (GVal, dict, rawJSONToGVal, (~>))
+import Text.Ginger.GVal ((~>))
+import qualified Text.Ginger.GVal as Gv
 import Text.Ginger.AST as Ga
 
 import qualified Options.Cli as Cli
 import qualified DB.TemplateStmt as Ts
 import qualified Assets.Types as At
+import qualified Service.Types as St
 import qualified Utils as Ut
 import DB.EngineStmt (execStmt)
+import Control.Monad.State (lift, gets)
+import Api.ResponseTypes (ClientServiceDescriptor(id))
 
 
 --------------------------------------------------------------------------------
@@ -87,7 +95,7 @@ data AssetTemplateError =
 -- ^ template file path
 -- ^ source file path (concatenated items with TOML front matter)
 -- ^ production name
-ingestTemplate :: Context -> Cli.ProducerOpts -> IO (Either AssetTemplateError (UUID, Text))
+ingestTemplate :: Context -> Cli.ProducerOpts -> IO (Either AssetTemplateError (Maybe UUID))
 ingestTemplate ctxt prodOpts =
   let
     mbTemplatePath = prodOpts.newTemplateSrcIG
@@ -136,7 +144,7 @@ ingestTemplate ctxt prodOpts =
     Right (templateId, tplLoc, tplText) ->
         let
           sourceName = T.pack (takeFileName sourcePath)
-          cacheKey = "doc-fnv1a64-" <> (T.pack . Ut.toHex64 . Ut.fnv1a64 $ TE.encodeUtf8 tplText)
+          internalTplText = preprocessTemplate tplText
         in do
         srcBytes <- Lbs.readFile sourcePath
         srcText <- either (throwIO . SourceDecodeError   . T.pack . show) pure (TE.decodeUtf8' . Lbs.toStrict $ srcBytes)
@@ -151,7 +159,7 @@ ingestTemplate ctxt prodOpts =
 
         -- Parse ginger template (from memory).
         -- Ginger's Source type is String; we keep filenames for better error messages.
-        tplRez <- parseGinger (s3Resolver ctxt.pgPoolCT ctxt.s3FetchCT) (Just (T.unpack templateName)) (T.unpack tplText)
+        tplRez <- parseGinger (s3Resolver ctxt.pgPoolCT ctxt.s3FetchCT) (Just (T.unpack templateName)) (T.unpack internalTplText)
         case tplRez of
           Left err -> pure . Left . GingerParseError . T.pack . show $ err
           Right template ->
@@ -159,7 +167,6 @@ ingestTemplate ctxt prodOpts =
               Left err -> pure . Left . SourceParseError . T.pack . show $ err
               Right items ->
                 let
-                  tplSize = fromIntegral $ T.length tplText
                   srcSize = Lbs.length srcBytes
                 in do
                 -- putStrLn $ "@[ingestTemplate] proc tpl: [" <> T.unpack (T.take 30 tplText <> "..." <> T.takeEnd 30 tplText) <> "]"
@@ -167,10 +174,10 @@ ingestTemplate ctxt prodOpts =
                   Just True -> do
                     forM_ (zip [1..] items) $ \(idx, item) ->
                       let
-                        rendered = renderRequest productionName idx item template
+                        eiContent = renderRequest productionName idx item template
                       in
-                      putStrLn $ "@[ingestTemplate] rendered: [" <> T.unpack rendered <> "]"
-                    pure $ Right (templateId, cacheKey)
+                      putStrLn $ "@[ingestTemplate] rendered: [" <> show eiContent <> "]"
+                    pure . Right $ Nothing
                   _ -> do
                     result <- execStmt "ingestTemplate" ctxt.pgPoolCT $ do
                       -- Add source info:
@@ -180,18 +187,38 @@ ingestTemplate ctxt prodOpts =
                       productionId <- Tx.statement (productionName, templateId, sourceId) Ts.insertProduction
 
                       -- requests
-                      forM_ (zip [1..] items) $ \(idx, item) -> do
+                      forM_ (zip [1..] items) $ \(idx, item) ->
                           let
-                            rendered = renderRequest productionName idx item template
-                          reqId <- Tx.statement (productionId, fromIntegral idx, item.metaJsonSI, rendered) Ts.insertRequest
-                          Tx.statement (reqId, "entered" :: Text, mkEnteredDetails templateName sourceName idx item) Ts.insertRequestEvent
-                          pure reqId
-
+                            eiContent = renderRequest productionName idx item template
+                          in do
+                          case eiContent of
+                            Left err -> pure $ Left err
+                            Right (memories, message) -> do
+                              reqId <- Tx.statement (productionId, fromIntegral idx, item.metaJsonSI, message.contentPR) Ts.insertRequest
+                              forM_ (zip [1..] memories) $ \(idx, memory) -> do
+                                linkMemoryToRequest productionId reqId idx memory
+                              Tx.statement (reqId, "entered" :: Text, mkEnteredDetails templateName sourceName idx item) Ts.insertRequestEvent
+                              pure $ Right ()
                       pure productionId
 
                     case result of
                       Left err -> pure . Left $ DbError (T.pack (show err))
-                      Right anID -> pure $ Right (anID, cacheKey)
+                      Right anID -> pure . Right . Just $ anID
+
+
+linkMemoryToRequest :: UUID -> UUID ->Int32 ->St.RequestContext -> Tx.Transaction ()
+linkMemoryToRequest prodID reqID idx message =
+  let
+    hash = Ut.toHex64Text $ Ut.fnv1a64Text message.memoryPC
+  in do
+  mbMemId <- Tx.statement hash Ts.findMemoryByHash
+  case mbMemId of
+    Nothing -> do
+      -- insertMemory :: Statement (UUID, Int32, Value, Text, Text) Int64
+      memId <- Tx.statement (prodID, idx, Ae.Null, message.memoryPC, hash) Ts.insertMemory
+      Tx.statement (reqID, memId) Ts.linkMemoryToRequest
+    Just memId ->
+      Tx.statement (reqID, memId) Ts.linkMemoryToRequest
 
 
 -- Correct the return values in s3Resolver to match IncludeResolver IO type (i.e., IO (Either Text Text))
@@ -218,30 +245,91 @@ s3Resolver dbPool s3FetchCT srcName = do
           Right bytes -> pure . Just . T.unpack . TE.decodeUtf8 . Lbs.toStrict $ bytes
 
 
+preprocessTemplate :: Text -> Text
+preprocessTemplate tplText =
+  T.replace "\n{# BATCHER:CACHE_BREAKPOINT #}\n" "\n{{ __batcher_cache_breakpoint() }}" tplText
+
+
 --------------------------------------------------------------------------------
 -- Ginger rendering
 
-type RenderM = Run SourcePos (Writer Text) Text
+data RequestContent = RequestContent {
+    contextRC :: Text
+  , messageRC :: Text
+  } deriving (Show)
 
-renderRequest :: Text -> Int -> SourceItem -> Template SourcePos -> Text
+
+data GRenderState = GRenderState {
+    outputOffsetGS :: Int
+    , breakpointsGS :: [ Int ]
+  }
+
+type RenderLog = Tlb.Builder
+type RenderM = Mst.StateT GRenderState (Mws.Writer RenderLog)
+type GingerM = Run SourcePos RenderM Text
+
+-- type TemplateM = Mst.StateT GRenderState RenderM
+
+
+renderRequest :: Text -> Int -> SourceItem -> Ga.Template SourcePos -> Either (Gr.RuntimeError SourcePos) ([St.RequestContext], St.RequestMessage)
 renderRequest productionName ix sItem template =
   let
-    ctx :: GVal RenderM
-    ctx = dict [
-        "production" ~> (dict [ "name" ~> productionName ] :: GVal RenderM)
+    valCtx :: Gv.GVal GingerM
+    valCtx = Gv.dict [
+        "production" ~> (Gv.dict [ "name" ~> productionName ] :: Gv.GVal GingerM)
       , "index" ~> ix
       , "text" ~> sItem.bodySI
-      , "meta" ~> (rawJSONToGVal sItem.metaJsonSI :: GVal RenderM)
+      , "meta" ~> (Gv.rawJSONToGVal sItem.metaJsonSI :: Gv.GVal GingerM)
       , "header_toml" ~> sItem.headerTomlSI
-      , "item" ~> (dict [
+      , "item" ~> (Gv.dict [
             "index" ~> ix
           , "content" ~> sItem.bodySI
-          , "meta" ~> (rawJSONToGVal sItem.metaJsonSI :: GVal RenderM)
+          , "meta" ~> (Gv.rawJSONToGVal sItem.metaJsonSI :: Gv.GVal GingerM)
           , "header_toml" ~> sItem.headerTomlSI
-        ] :: GVal RenderM)
+        ] :: Gv.GVal GingerM)
+      , "__batcher_cache_breakpoint" ~> Gv.fromFunction cacheBrkPtFn
       ]
+    context = Gr.easyContext emitText valCtx
+    initState = GRenderState 0 []
+    ggRunner = Gr.runGingerT context template
+    ((result, finalState), renderedBld) = Mws.runWriter $ Mst.runStateT ggRunner initState
   in
-  easyRender ctx template
+  case result of
+    Left err -> Left err
+    Right _ ->
+      let
+        rendered = Tl.toStrict $ Tlb.toLazyText renderedBld
+        breakpoints = reverse $ finalState.breakpointsGS
+        (ctxtTxts, msgTxt) = splitTextOnBreakpoints rendered 0 breakpoints
+        contexts = map (\txt -> St.RequestContext txt St.DeveloperPR) ctxtTxts
+        message = St.RequestMessage (Uu.fromWords 1 2 3 4) msgTxt
+      in
+      Right (contexts, message)
+  where
+  -- Returns the list of contexts and a message
+  splitTextOnBreakpoints :: Text -> Int -> [Int] -> ([Text], Text)
+  splitTextOnBreakpoints allText offset breakpoints =
+    case breakpoints of
+      [] -> ([], allText)
+      a : rest ->
+        let
+          (ctxt, msg) = splitTextOnBreakpoints (T.drop (a - offset) allText) (offset + a) rest
+        in
+        (T.take (a - offset) allText : ctxt, msg)
+
+
+  emitText :: Text -> RenderM ()
+  emitText txt = do
+    Mst.modify' $ \state -> state { outputOffsetGS = state.outputOffsetGS + T.length txt }
+    lift . Mws.tell . Tlb.fromText $ txt
+  
+  cacheBrkPtFn :: Gv.Function GingerM
+  cacheBrkPtFn _ = do
+    Gr.liftRun $ do
+      offset <- gets outputOffsetGS
+      Mst.modify' $ \state -> state { breakpointsGS = offset : state.breakpointsGS }
+    -- The function renders absolutely nothing.
+    pure def
 
 mkEnteredDetails :: Text -> Text -> Int -> SourceItem -> Value
 mkEnteredDetails templateName sourceName ix sItem = Ae.object [

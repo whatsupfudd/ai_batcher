@@ -40,6 +40,8 @@ runWithOptions cliOptions fileOptions = do
             Opt.ReceiverCmd recvOpts -> Cmd.receiveCmd recvOpts
             Opt.ProcessCmd processOpts -> Cmd.processCmd processOpts
             Opt.TemplateCmd templateSubCmds -> Cmd.templateCmd templateSubCmds
+            Opt.ImgTestCmd imgTestOpts -> Cmd.imgTest imgTestOpts
+            Opt.PrintTestCmd printTestOpts -> Cmd.printCmd printTestOpts
       rtOptions <- Opt.mergeOptions cliOptions fileOptions envOptions
       result <- cmdExecutor rtOptions
       -- TODO: return a properly kind of conclusion.

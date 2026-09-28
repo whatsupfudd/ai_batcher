@@ -1,6 +1,9 @@
-module Utils (fnv1a64, toHex64) where
+module Utils where
 
 import qualified Data.ByteString as BS
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as Te
 import Data.Word ( Word64, Word8 )
 import Data.Bits ( xor )
 import Numeric ( showHex )
@@ -19,5 +22,20 @@ fnv1a64 = BS.foldl' step offset
 
 -- Hex printer for Word64
 toHex64 :: Word64 -> String
-toHex64 w = let s = showHex w ""
-            in replicate (16 - length s) '0' ++ s
+toHex64 w = let
+  s = showHex w ""
+  in
+  replicate (16 - length s) '0' ++ s
+
+
+fnv1a64Text :: Text -> Word64
+fnv1a64Text = fnv1a64 . Te.encodeUtf8
+
+
+toHex64Text :: Word64 -> Text
+toHex64Text w =
+  let
+    s = T.pack $ showHex w ""
+  in
+  T.replicate (16 - T.length s) "0" <> s
+

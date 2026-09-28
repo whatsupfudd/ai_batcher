@@ -16,9 +16,6 @@ import Control.Concurrent.STM
 import Control.Exception (Exception, throwIO)
 import Control.Monad (forever, unless, void, when)
 
-import Data.Aeson (Value, (.:), (.:?), (.=))
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Types as AT
 import qualified Data.ByteString.Lazy as BL
 import Data.Either (partitionEithers)
 import Data.Int (Int32, Int64)
@@ -34,6 +31,9 @@ import Data.Vector (Vector)
 import qualified Data.Vector as V
 
 import GHC.Generics (Generic)
+import Data.Aeson (Value, (.:), (.:?), (.=))
+import qualified Data.Aeson as Ae
+import qualified Data.Aeson.Types as AT
 
 import qualified Hasql.Pool as Pool
 import qualified Hasql.Transaction as Tx
@@ -182,9 +182,9 @@ fetchWorker ctxt cfg job = do
 
         -- Load requests for this batch
         reqIdsVec <- listBatchRequests ctxt.pgPoolCT job.batchUidFJ
-        let reqSet :: Set UUID
-            reqSet = S.fromList (V.toList reqIdsVec)
-
+        let
+          reqSet :: Set UUID
+          reqSet = S.fromList (V.toList reqIdsVec)
 
         -- Materialize per-request answers + request completion
         (okCount, missCount) <- persistAnswers ctxt.pgPoolCT job.batchUidFJ goodResults
@@ -231,14 +231,15 @@ listBatchRequests pool batchUid = do
 persistAnswers :: Pool.Pool -> UUID -> [St.RequestResult] -> IO (Int, Int)
 persistAnswers pool batchUid answers = do
   -- okCount = inserted/updated answers, missCount = 0 here (miss computed earlier)
-  let okCount = length answers
-      missCount = 0
+  let
+    okCount = length answers
+    missCount = 0
   -- putStrLn $ "@[persistAnswers] batchUid: " <> show batchUid <> ", answers: " <> show (length answers)
   ei <- Es.execStmt "persistAnswers" pool $ do
           V.forM_ (V.fromList answers) $ \rResult ->
             let
               requestId = rResult.requestId
-              metaData = fromMaybe Aeson.Null rResult.metaData
+              metaData = maybe Ae.Null Ae.toJSON rResult.metaData
               content = fromMaybe "" rResult.content
             in do
             Tx.statement (batchUid, requestId, metaData, content) Es.upsertRequestResultStmt
@@ -302,17 +303,17 @@ extractAnswers v allowed =
   where
     parseTop :: Value -> AT.Parser [(UUID, Value, Text)]
     parseTop =
-      Aeson.withObject "batchResult" $ \o -> do
+      Ae.withObject "batchResult" $ \o -> do
         mResults <- o .:? "results"
         mData    <- o .:? "data"
         mItems   <- o .:? "items"
         case (mResults, mData, mItems) of
-          (Just (Aeson.Array arr), _, _) -> parseArray parseResultObj arr
-          (_, Just (Aeson.Array arr), _) -> parseArray parseDataObj arr
-          (_, _, Just (Aeson.Array arr)) -> parseArray parseItemObj arr
+          (Just (Ae.Array arr), _, _) -> parseArray parseResultObj arr
+          (_, Just (Ae.Array arr), _) -> parseArray parseDataObj arr
+          (_, _, Just (Ae.Array arr)) -> parseArray parseItemObj arr
           _ -> pure []
 
-    parseArray :: (Value -> AT.Parser (Maybe (UUID, Value, Text))) -> Aeson.Array -> AT.Parser [(UUID, Value, Text)]
+    parseArray :: (Value -> AT.Parser (Maybe (UUID, Value, Text))) -> Ae.Array -> AT.Parser [(UUID, Value, Text)]
     parseArray p arr = do
       ms <- traverse p (V.toList arr)
       pure $ catMaybes ms
@@ -322,13 +323,13 @@ extractAnswers v allowed =
 
     parseResultObj :: Value -> AT.Parser (Maybe (UUID, Value, Text))
     parseResultObj =
-      Aeson.withObject "result" $ \o -> do
+      Ae.withObject "result" $ \o -> do
         cid <- o .: "custom_id"
         let mRid = parseUuidText cid
         case mRid of
           Nothing -> pure Nothing
           Just rid -> do
-            meta <- o .:? "metadata" >>= \mm -> pure (maybe (Aeson.object []) id mm)
+            meta <- o .:? "metadata" >>= \mm -> pure (maybe (Ae.object []) id mm)
             -- prefer output_text, fall back to content, fall back to pretty json
             mTxt <- o .:? "output_text"
             mTxt2 <- o .:? "content"
@@ -337,14 +338,14 @@ extractAnswers v allowed =
 
     parseDataObj :: Value -> AT.Parser (Maybe (UUID, Value, Text))
     parseDataObj =
-      Aeson.withObject "dataItem" $ \o -> do
+      Ae.withObject "dataItem" $ \o -> do
         cid <- o .: "custom_id"
         let mRid = parseUuidText cid
         case mRid of
           Nothing -> pure Nothing
           Just rid -> do
             -- keep whole object as metadata by default
-            let meta = Aeson.Object o
+            let meta = Ae.Object o
             -- try common field names
             mTxt <- o .:? "output_text"
             mTxt2 <- o .:? "text"
@@ -353,14 +354,14 @@ extractAnswers v allowed =
 
     parseItemObj :: Value -> AT.Parser (Maybe (UUID, Value, Text))
     parseItemObj =
-      Aeson.withObject "item" $ \o -> do
+      Ae.withObject "item" $ \o -> do
         cid <- o .: "custom_id"
         let mRid = parseUuidText cid
         case mRid of
           Nothing -> pure Nothing
           Just rid -> do
             mResp <- o .:? "response"
-            let meta = Aeson.Object o
+            let meta = Ae.Object o
             txt <- case mResp of
               Just rv -> pure (extractTextFromResponse rv)
               Nothing -> pure ""
@@ -375,7 +376,7 @@ extractTextFromResponse v =
   where
     parseOne :: Value -> AT.Parser Text
     parseOne =
-      Aeson.withObject "resp" $ \o -> do
+      Ae.withObject "resp" $ \o -> do
         -- try {output_text:"..."}
         mA <- o .:? "output_text"
         case mA of
@@ -392,7 +393,7 @@ extractTextFromResponse v =
 
 rawFetchedDetails :: UUID -> UUID -> Int64 -> Value
 rawFetchedDetails batchUid rawLoc bytesSz =
-  Aeson.object
+  Ae.object
     [ "event" .= ("raw_fetched" :: Text)
     , "batch_uid" .= batchUid
     , "raw_result_locator" .= rawLoc
@@ -401,7 +402,7 @@ rawFetchedDetails batchUid rawLoc bytesSz =
 
 requestCompletedDetails :: UUID -> Value -> Value
 requestCompletedDetails batchUid meta =
-  Aeson.object
+  Ae.object
     [ "event" .= ("answer_materialized" :: Text)
     , "batch_uid" .= batchUid
     , "metadata" .= meta
@@ -409,7 +410,7 @@ requestCompletedDetails batchUid meta =
 
 answersMaterializedDetails :: Int -> Int -> Int -> Value
 answersMaterializedDetails okCount missCount totalReqs =
-  Aeson.object
+  Ae.object
     [ "event" .= ("answers_materialized" :: Text)
     , "ok_count" .= okCount
     , "missing_count" .= missCount
@@ -418,7 +419,7 @@ answersMaterializedDetails okCount missCount totalReqs =
 
 fetchFailedDetails :: Text -> Text -> Value
 fetchFailedDetails code msg =
-  Aeson.object
+  Ae.object
     [ "event" .= ("fetch_failed" :: Text)
     , "error_code" .= code
     , "error_message" .= msg

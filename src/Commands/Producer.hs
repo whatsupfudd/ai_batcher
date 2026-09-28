@@ -63,17 +63,19 @@ produceCmd prodOpts rtOpts = do
             rezA <- Tp.ingestTemplate ctxt prodOpts
             case rezA of
               Left err -> putStrLn $ "@[produceCmd] ingestTemplate err: " <> show err
-              Right productionInfo -> case prodOpts.dryRunIG of
+              Right mbProdID -> case prodOpts.dryRunIG of
                 Just True ->
-                  putStrLn $ "@[produceCmd] productionInfo: " <> show productionInfo
-                _ -> do
-                  putStrLn $ "@[produceCmd] productionID: " <> show productionInfo
-                  runEngines pgPool s3Conn apiKey targetProvider productionInfo prodOpts.modelIG prodOpts.batchSizeIG
+                  putStrLn $ "@[produceCmd] productionInfo: " <> show mbProdID
+                _ -> case mbProdID of
+                  Nothing -> putStrLn $ "@[produceCmd] no productionID"
+                  Just productionID -> do
+                    putStrLn $ "@[produceCmd] productionID: " <> show productionID
+                    runEngines pgPool s3Conn apiKey targetProvider productionID prodOpts.modelIG prodOpts.batchSizeIG
       pure ()
 
 
-runEngines :: Pool.Pool -> At.S3Conn -> T.Text -> T.Text -> (UUID, Text) -> Maybe Text -> Maybe Int -> IO ()
-runEngines pgPool s3Conn apiKey targetProvider productionInfo mbModel mbBatchSize = do
+runEngines :: Pool.Pool -> At.S3Conn -> T.Text -> T.Text -> UUID -> Maybe Text -> Maybe Int -> IO ()
+runEngines pgPool s3Conn apiKey targetProvider prodID mbModel mbBatchSize = do
   manager <- Hc.newManager tlsManagerSettings
   let
     fetchCtxt = Fe.Context {
@@ -128,12 +130,12 @@ runEngines pgPool s3Conn apiKey targetProvider productionInfo mbModel mbBatchSiz
   -- TODO: how long to run?
   threadDelay $ 1000000 * 60 * 10 -- 10 minutes
   where  
-  submitBatchToService :: Manager -> Text -> NonEmpty (UUID, Text) -> IO (Either Su.SubmitError Su.SubmitOk)
-  submitBatchToService manager targetProvider requestPairs = do
-    eiRez <- Sp.submitBatchToService manager targetProvider apiKey requestPairs (snd productionInfo) mbModel
+  submitBatchToService :: Manager -> Text -> Vector St.BatchRequest -> IO (Either Su.SubmitError Su.SubmitOk)
+  submitBatchToService manager targetProvider requests = do
+    eiRez <- Sp.submitBatchToService manager targetProvider apiKey requests prodID mbModel
     case eiRez of
       Left errMsg -> do
-        putStrLn $ "@[submitBatchToService] error: " <> errMsg
+        putStrLn $ "@[Prod.submitBatchToService] error: " <> errMsg
         pure . Left $ Su.SubmitError ("P:" <> targetProvider) (T.pack errMsg)
       Right (providerID, batchID) ->
         pure . Right $ Su.SubmitOk providerID batchID

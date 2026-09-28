@@ -11,6 +11,8 @@ module Commands  (
   , module Commands.Receiver
   , module Commands.Process
   , module Commands.Template
+  , module Commands.ImgTest
+  , module Commands.PrintTest
  )
 where
 
@@ -26,4 +28,5 @@ import Commands.Producer
 import Commands.Receiver
 import Commands.Process
 import Commands.Template
-
+import Commands.ImgTest
+import Commands.PrintTest

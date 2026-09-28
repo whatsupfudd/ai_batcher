@@ -98,6 +98,19 @@ claimRequestsStmt =
     returning u.request_id :: uuid, picked.request_text :: text
   |]
 
+
+fetchMemories :: Statement (Vector UUID) (Vector (UUID, Int32, Value, Int32, Text, Text))
+fetchMemories =
+  [vectorStatement|
+    select
+      rm.request_fk::uuid, m.memory_uid::int4, m.item_meta::jsonb, m.item_index::int4, m.content::text, m.content_hash::text
+    from batcher.memories m
+    join batcher.request_memories rm on rm.memory_fk = m.memory_uid
+    where rm.request_fk = any($1::uuid[])
+    order by m.item_index asc
+  |]
+
+
 -- Poll Stmts:
 
 -- Returns one row per claimed batch UUID.

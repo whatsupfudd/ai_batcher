@@ -79,6 +79,21 @@ newtype DeleteTO = DeleteTO {
   deleteTemplateID :: Text
   } deriving (Show)
 
+
+data ImgTestOpts = ImgTestOpts {
+    imagePathIG :: FilePath
+  , modelIG :: Text
+  , detailIG :: Text
+  }
+  deriving (Show)
+
+data PrintTestOpts = PrintTestOpts {
+  inFile :: FilePath
+  , outFile :: FilePath
+  }
+  deriving (Show)
+
+
 data Command =
   HelpCmd
   | VersionCmd
@@ -93,6 +108,8 @@ data Command =
   | ProcessCmd ProcessOpts
   | TemplateCmd TemplateSubCmds
   | SubmitCmd SubmitOpts
+  | ImgTestCmd ImgTestOpts
+  | PrintTestCmd PrintTestOpts
   deriving stock (Show)
 
 parseCliOptions :: IO (Either String CliOptions)
@@ -171,6 +188,8 @@ commandDefs =
       , ("process", ProcessCmd <$> processOpts, "Processes the results.")
       , ("template", TemplateCmd <$> templateSubCmds, "Manages template information into the database.")
       , ("submit", SubmitCmd <$> submitOpts, "Submits a set of items to a provider through the templating engine.")
+      , ("imgtest", ImgTestCmd <$> imgTestOpts, "Tests the image analysis capabilities of the system.")
+      , ("printtest", PrintTestCmd <$> printTestOpts, "Prints the results of a test.")
       ]
     headArray = head cmdArray
     tailArray = tail cmdArray
@@ -207,8 +226,8 @@ producerOpts :: Parser ProducerOpts
 producerOpts =
   ProducerOpts
     <$> strArgument (metavar "TEMPLATE_NAME" <> help "Name of template to use for production.")
-    <*> optional (strOption (long "template" <> short 't' <> metavar "TEMPLATE_FILE" <> help "Template file to use for production."))
-    <*> strArgument (metavar "SOURCE_FILE" <> help "Source file to use for production.")
+    <*> optional (strOption (long "template" <> short 't' <> metavar "TEMPLATE_ID" <> help "ID of Template to use for production."))
+    <*> strArgument (metavar "SOURCE_FILE" <> help "Data file to use for production.")
     <*> optional (strArgument (metavar "PRODUCTION_NAME" <> help "Name to use for production."))
     <*> optional (strArgument (metavar "VERSION" <> help "Version to produce."))
     <*> optional (strOption (long "provider" <> short 'p' <> metavar "PROVIDER" <> help "Provider to use for production."))
@@ -265,3 +284,14 @@ submitOpts =
     <*> strArgument (metavar "TEMPLATE_ID" <> help "Template ID to use to assemble prompts.")
     <*> optional (strOption (long "service-id" <> short 's' <> metavar "SERVICE_ID" <> help "Service ID to submit."))
     <*> optional (strOption (long "model-name" <> short 'm' <> metavar "MODEL_NAME" <> help "Model name to submit."))
+
+imgTestOpts :: Parser ImgTestOpts
+imgTestOpts =
+  ImgTestOpts <$> strArgument (metavar "IMAGE_PATH" <> help "Image path to test.")
+    <*> strArgument (metavar "MODEL" <> help "Model to use for testing.")
+    <*> strArgument (metavar "DETAIL" <> help "Detail level to use for testing.")
+
+printTestOpts :: Parser PrintTestOpts
+printTestOpts =
+  PrintTestOpts <$> strArgument (metavar "INPUT_FILE" <> help "Input file to print.")
+    <*> strArgument (metavar "OUTPUT_FILE" <> help "Output file to write results to.")
